@@ -2,7 +2,7 @@ pre-commit:
   parallel: false
   commands:
     oxlint:
-      glob: "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
+      glob: "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx}"
       run: pnpm oxlint --fix {staged_files}
       stage_fixed: true
       priority: 1
