@@ -1,0 +1,203 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`SchemaDetector > detectExportedSchemas > should detect schemas from basic-schema.ts 1`] = `
+[
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 6,
+    "name": "UserSchema",
+  },
+]
+`;
+
+exports[`SchemaDetector > detectExportedSchemas > should detect schemas from mixed-export-schema.ts 1`] = `
+[
+  {
+    "explicitType": undefined,
+    "isExported": false,
+    "line": 4,
+    "name": "InternalMetaSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 10,
+    "name": "PublicDataSchema",
+  },
+]
+`;
+
+exports[`SchemaDetector > detectExportedSchemas > should detect schemas from multi-schema.ts 1`] = `
+[
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 8,
+    "name": "UserSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 14,
+    "name": "PostSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 22,
+    "name": "CommentSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": false,
+    "line": 33,
+    "name": "InternalHelperSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 40,
+    "name": "DateStringSchema",
+  },
+  {
+    "isExported": true,
+    "line": 48,
+    "localName": "InternalHelperSchema",
+    "name": "AliasedSchema",
+  },
+]
+`;
+
+exports[`SchemaDetector > detectExportedSchemas > should detect schemas from named-import-schema.ts 1`] = `
+[
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 5,
+    "name": "NamedAddressSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 10,
+    "name": "NamedUserSchema",
+  },
+]
+`;
+
+exports[`SchemaDetector > detectExportedSchemas > should detect schemas from namespace-alias-schema.ts 1`] = `
+[
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 4,
+    "name": "AliasedAddressSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 8,
+    "name": "AliasedUserSchema",
+  },
+]
+`;
+
+exports[`SchemaDetector > detectExportedSchemas > should detect schemas from union-schema.ts 1`] = `
+[
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 6,
+    "name": "StatusSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 15,
+    "name": "ResultSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 23,
+    "name": "StringOrNumberSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 28,
+    "name": "RoleSchema",
+  },
+]
+`;
+
+exports[`SchemaDetector > detectExportedSchemas > should detect schemas from utility-types-schema.ts 1`] = `
+[
+  {
+    "explicitType": undefined,
+    "isExported": false,
+    "line": 3,
+    "name": "UserSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 13,
+    "name": "PartialUserSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 18,
+    "name": "UserIdNameSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 23,
+    "name": "UserWithoutEmailSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 28,
+    "name": "RequiredUserSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 33,
+    "name": "UserKeySchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 38,
+    "name": "NestedSchema",
+  },
+  {
+    "explicitType": undefined,
+    "isExported": true,
+    "line": 49,
+    "name": "DeepPartialNestedSchema",
+  },
+]
+`;
+
+exports[`SchemaDetector > getSchemaNames > should return schema names from basic-schema.ts 1`] = `
+[
+  "UserSchema",
+]
+`;
+
+exports[`SchemaDetector > getSchemaNames > should return schema names from multi-schema.ts 1`] = `
+[
+  "UserSchema",
+  "PostSchema",
+  "CommentSchema",
+  "InternalHelperSchema",
+  "DateStringSchema",
+  "AliasedSchema",
+]
+`;

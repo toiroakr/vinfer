@@ -1,0 +1,17 @@
+pre-commit:
+  parallel: false
+  commands:
+    oxlint:
+      glob: "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
+      run: pnpm oxlint --fix {staged_files}
+      stage_fixed: true
+      priority: 1
+    oxfmt:
+      glob: "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc,md}"
+      run: pnpm oxfmt --write {staged_files}
+      stage_fixed: true
+      priority: 2
+    typecheck:
+      glob: "*.{ts,tsx,cts,mts}"
+      run: pnpm typecheck
+      priority: 3

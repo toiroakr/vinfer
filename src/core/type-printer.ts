@@ -1,0 +1,625 @@
+import { relative, dirname, isAbsolute } from "pathe";
+import { VALIBOT_PRINTED_TYPE_NAMES } from "./valibot-bindings.js";
+import type {
+  ExtractResult,
+  MappedTypeName,
+  DeclarationOptions,
+  FieldDescription,
+} from "./types.js";
+
+/**
+ * Options for formatting type output.
+ */
+export interface PrintOptions {
+  /** Indentation string (default: "  ") */
+  indent?: string;
+  /** Whether to include the schema name in the output */
+  includeSchemaName?: boolean;
+}
+
+/**
+ * Formats the extraction result for console output.
+ *
+ * @param result - The extraction result containing input and output types
+ * @param options - Formatting options
+ * @returns Formatted string ready for console output
+ */
+export function formatResult(result: ExtractResult, options: PrintOptions = {}): string {
+  const { indent = "  ", includeSchemaName = false } = options;
+  const lines: string[] = [];
+
+  if (includeSchemaName) {
+    lines.push(`// Schema: ${result.schemaName}`);
+    lines.push("");
+  }
+
+  lines.push("// input");
+  lines.push(prettifyType(result.input, indent));
+  lines.push("");
+  lines.push("// output");
+  lines.push(prettifyType(result.output, indent));
+
+  return lines.join("\n");
+}
+
+/**
+ * Prettifies a type string by formatting object types with proper indentation.
+ *
+ * @param typeStr - The type string to format
+ * @param indent - The indentation string to use
+ * @param descriptions - Optional field descriptions to insert as TSDoc comments
+ * @param prefix - Current path prefix for nested objects
+ * @returns The formatted type string
+ */
+function prettifyType(
+  typeStr: string,
+  indent: string,
+  descriptions?: FieldDescription[],
+  prefix: string = "",
+): string {
+  // If it's not an object type, return as-is
+  if (!typeStr.startsWith("{") || !typeStr.endsWith("}")) {
+    return typeStr;
+  }
+
+  const prettified = prettifyObjectType(typeStr, indent, descriptions, prefix);
+
+  // Remove trailing spaces from each line
+  return prettified
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n");
+}
+
+/**
+ * Creates a TSDoc comment line.
+ */
+function createTsDocComment(description: string, indentStr: string): string {
+  const lines = description.split("\n");
+  if (lines.length === 1) {
+    return `${indentStr}/** ${description} */\n`;
+  }
+  return (
+    [`${indentStr}/**`, ...lines.map((line) => `${indentStr} * ${line}`), `${indentStr} */`].join(
+      "\n",
+    ) + "\n"
+  );
+}
+
+/**
+ * Gets description for a field path.
+ */
+function getFieldDescription(
+  fieldName: string,
+  prefix: string,
+  descriptions?: FieldDescription[],
+): string | undefined {
+  if (!descriptions) {
+    return undefined;
+  }
+
+  const path = prefix ? `${prefix}.${fieldName}` : fieldName;
+  const desc = descriptions.find((d) => d.path === path);
+  return desc?.description;
+}
+
+/**
+ * Parser state for object type formatting.
+ */
+interface ParserState {
+  result: string;
+  depth: number;
+  inString: boolean;
+  stringChar: string;
+  currentFieldName: string;
+  capturingFieldName: boolean;
+  /**
+   * Last field name seen at each depth (keyed by depth). Recording per-depth
+   * (rather than a single shared value) keeps a parent field's name intact
+   * while its children are parsed, so sibling object braces at the same
+   * depth (e.g. union members `{ a } | { b }`) still resolve to the parent
+   * field's own path instead of inheriting the first sibling's last field.
+   */
+  lastFieldByDepth: Record<number, string>;
+  /**
+   * One entry per open "{", holding the field name that owns that brace ("" if
+   * none, e.g. the root object or a union member sibling). Pushed/popped in
+   * lockstep with braces so it always reflects the true nesting depth.
+   */
+  fieldNameStack: string[];
+}
+
+/**
+ * Creates initial parser state.
+ */
+function createParserState(): ParserState {
+  return {
+    result: "",
+    depth: 0,
+    inString: false,
+    stringChar: "",
+    currentFieldName: "",
+    capturingFieldName: false,
+    lastFieldByDepth: {},
+    fieldNameStack: [],
+  };
+}
+
+/**
+ * Updates string literal tracking state.
+ * Returns true if currently inside a string literal.
+ */
+function updateStringState(
+  state: ParserState,
+  char: string,
+  prevChar: string | undefined,
+): boolean {
+  if ((char === '"' || char === "'" || char === "`") && prevChar !== "\\") {
+    if (!state.inString) {
+      state.inString = true;
+      state.stringChar = char;
+    } else if (char === state.stringChar) {
+      state.inString = false;
+      state.stringChar = "";
+    }
+  }
+  return state.inString;
+}
+
+/**
+ * Handles opening brace character.
+ */
+function handleOpenBrace(state: ParserState, indent: string): void {
+  // The field owning this brace is whatever was last seen at the *parent*
+  // depth - not overwritten by a sibling brace's own inner fields.
+  const ownerField = state.lastFieldByDepth[state.depth] ?? "";
+  state.depth++;
+  state.result += "{\n" + indent.repeat(state.depth);
+  state.fieldNameStack.push(ownerField);
+  state.capturingFieldName = true;
+  state.currentFieldName = "";
+}
+
+/**
+ * Handles closing brace character.
+ */
+function handleCloseBrace(state: ParserState, indent: string): void {
+  // Clear this depth's last-seen field so it can't leak into a sibling
+  // brace opened afterward at the parent depth.
+  delete state.lastFieldByDepth[state.depth];
+  state.depth--;
+  state.fieldNameStack.pop();
+  state.result += "\n" + indent.repeat(state.depth) + "}";
+}
+
+/**
+ * Handles colon character and inserts TSDoc comment if applicable.
+ */
+function handleColon(
+  state: ParserState,
+  indent: string,
+  descriptions: FieldDescription[] | undefined,
+  prefix: string,
+): void {
+  if (state.capturingFieldName && state.currentFieldName) {
+    const cleanFieldName = state.currentFieldName.replace(/\?$/, "").trim();
+    const scopePath = state.fieldNameStack.filter(Boolean).join(".");
+    const currentPath = [prefix, scopePath].filter(Boolean).join(".");
+    const desc = getFieldDescription(cleanFieldName, currentPath, descriptions);
+
+    if (desc) {
+      const lastNewlinePos = state.result.lastIndexOf("\n");
+      const beforeField = state.result.substring(0, lastNewlinePos + 1);
+      const fieldPart = state.result.substring(lastNewlinePos + 1);
+      state.result = beforeField + createTsDocComment(desc, indent.repeat(state.depth)) + fieldPart;
+    }
+    state.lastFieldByDepth[state.depth] = cleanFieldName;
+  }
+  state.result += ":";
+  state.capturingFieldName = false;
+  state.currentFieldName = "";
+}
+
+/**
+ * Handles semicolon character.
+ */
+function handleSemicolon(state: ParserState, indent: string, typeStr: string, index: number): void {
+  const remaining = typeStr.slice(index + 1).trim();
+  if (remaining.startsWith("}")) {
+    state.result += ";";
+  } else {
+    state.result += ";\n" + indent.repeat(state.depth);
+    state.capturingFieldName = true;
+    state.currentFieldName = "";
+  }
+}
+
+/**
+ * Handles space character, skipping extra spaces after newlines.
+ */
+function handleSpace(state: ParserState, indent: string): boolean {
+  if (
+    state.result.endsWith("\n" + indent.repeat(state.depth)) ||
+    state.result.endsWith("{\n" + indent.repeat(state.depth))
+  ) {
+    return true; // Skip this space
+  }
+  state.result += " ";
+  if (state.capturingFieldName) {
+    state.currentFieldName += " ";
+  }
+  return false;
+}
+
+/**
+ * Handles default character.
+ */
+function handleDefaultChar(state: ParserState, char: string): void {
+  state.result += char;
+  if (state.capturingFieldName) {
+    state.currentFieldName += char;
+  }
+}
+
+/**
+ * Handles character inside a string literal.
+ */
+function handleStringChar(state: ParserState, char: string): void {
+  state.result += char;
+  if (state.capturingFieldName) {
+    state.currentFieldName += char;
+  }
+}
+
+/**
+ * Formats an object type string with proper indentation and line breaks.
+ */
+function prettifyObjectType(
+  typeStr: string,
+  indent: string,
+  descriptions?: FieldDescription[],
+  prefix: string = "",
+): string {
+  const state = createParserState();
+
+  for (let i = 0; i < typeStr.length; i++) {
+    const char = typeStr[i];
+    const prevChar = typeStr[i - 1];
+
+    const inString = updateStringState(state, char, prevChar);
+
+    if (inString) {
+      handleStringChar(state, char);
+      continue;
+    }
+
+    switch (char) {
+      case "{":
+        handleOpenBrace(state, indent);
+        break;
+      case "}":
+        handleCloseBrace(state, indent);
+        break;
+      case ":":
+        handleColon(state, indent, descriptions, prefix);
+        break;
+      case ";":
+        handleSemicolon(state, indent, typeStr, i);
+        break;
+      case " ":
+        handleSpace(state, indent);
+        break;
+      default:
+        handleDefaultChar(state, char);
+    }
+  }
+
+  return state.result;
+}
+
+/**
+ * Formats the extraction result as input type only.
+ */
+export function formatInputOnly(result: ExtractResult, options: PrintOptions = {}): string {
+  const { indent = "  " } = options;
+  return prettifyType(result.input, indent);
+}
+
+/**
+ * Formats the extraction result as output type only.
+ */
+export function formatOutputOnly(result: ExtractResult, options: PrintOptions = {}): string {
+  const { indent = "  " } = options;
+  return prettifyType(result.output, indent);
+}
+
+/**
+ * Formats a single extraction result as TypeScript type declaration(s).
+ *
+ * @param result - The extraction result
+ * @param typeName - The mapped type names
+ * @param options - Declaration options
+ * @returns TypeScript type declaration string
+ */
+export function formatAsDeclaration(
+  result: ExtractResult,
+  typeName: MappedTypeName,
+  options: DeclarationOptions = {},
+): string {
+  const { inputOnly, outputOnly, mergeSame } = options;
+  const lines: string[] = [];
+  const indent = "  ";
+
+  const inputFormatted = prettifyType(result.input, indent, result.fieldDescriptions);
+  const outputFormatted = prettifyType(result.output, indent, result.fieldDescriptions);
+
+  // Schema-level TSDoc comment
+  const schemaComment = result.description
+    ? `/**\n${result.description
+        .split("\n")
+        .map((line) => ` * ${line}`)
+        .join("\n")}\n */\n`
+    : "";
+
+  // Only export if the original schema was exported
+  const exportKeyword = result.isExported ? "export " : "";
+
+  // If mergeSame is enabled and types are identical
+  if (mergeSame && result.input === result.output) {
+    lines.push(`${schemaComment}${exportKeyword}type ${typeName.unifiedName} = ${inputFormatted};`);
+    // Emit aliases for input/output names that differ from the unified name
+    if (typeName.inputName !== typeName.unifiedName) {
+      lines.push(`${exportKeyword}type ${typeName.inputName} = ${typeName.unifiedName};`);
+    }
+    if (
+      typeName.outputName !== typeName.unifiedName &&
+      typeName.outputName !== typeName.inputName
+    ) {
+      lines.push(`${exportKeyword}type ${typeName.outputName} = ${typeName.unifiedName};`);
+    }
+    return lines.join("\n");
+  }
+
+  // Input type
+  if (!outputOnly) {
+    lines.push(`${schemaComment}${exportKeyword}type ${typeName.inputName} = ${inputFormatted};`);
+  }
+
+  // Output type
+  if (!inputOnly) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    // Only add schema comment to output if input was not added
+    const outputComment = outputOnly ? schemaComment : "";
+    lines.push(`${outputComment}${exportKeyword}type ${typeName.outputName} = ${outputFormatted};`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Formats multiple extraction results as TypeScript type declarations.
+ *
+ * @param results - Array of extraction results
+ * @param mapName - Function to map schema name to type names
+ * @param options - Declaration options
+ * @returns TypeScript type declarations string
+ */
+/**
+ * Escapes special characters in a string for use in a RegExp.
+ */
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function formatMultipleAsDeclarations(
+  results: ExtractResult[],
+  mapName: (schemaName: string) => MappedTypeName,
+  options: DeclarationOptions = {},
+): string {
+  // Build a map of schema names to their mapped type names (exported only)
+  const typeNameMap = new Map<string, MappedTypeName>();
+  for (const result of results) {
+    if (!result.isExported) continue;
+    typeNameMap.set(result.schemaName, mapName(result.schemaName));
+  }
+
+  // Pass 1: Replace schema references with correct type names
+  let fixedResults = results.map((result) => {
+    let input = result.input;
+    let output = result.output;
+
+    for (const [schemaName, mappedName] of typeNameMap) {
+      const escapedSchemaName = escapeRegExp(schemaName);
+
+      const inputPattern = new RegExp(`\\b${escapedSchemaName}Input\\b`, "g");
+      input = input.replace(inputPattern, mappedName.inputName);
+
+      const outputPattern = new RegExp(`\\b${escapedSchemaName}Output\\b`, "g");
+      output = output.replace(outputPattern, mappedName.outputName);
+    }
+
+    return { ...result, input, output };
+  });
+
+  // Pass 2: When mergeSame is enabled, determine which schemas can be merged and
+  // replace input/output-specific names with unified names.
+  // Uses topological sort to process schemas in dependency order so that
+  // transitive merges (A → B → C) are resolved in a single pass.
+  if (options.mergeSame) {
+    // Build dependency graph: which schemas does each schema reference?
+    const deps = new Map<string, Set<string>>();
+    for (const result of fixedResults) {
+      const refSet = new Set<string>();
+      for (const [, mapped] of typeNameMap) {
+        if (mapped.inputName === mapped.unifiedName) continue;
+        const inputRe = new RegExp(`\\b${escapeRegExp(mapped.inputName)}\\b`);
+        const outputRe = new RegExp(`\\b${escapeRegExp(mapped.outputName)}\\b`);
+        if (inputRe.test(result.input) || outputRe.test(result.output)) {
+          refSet.add(mapped.inputName);
+        }
+      }
+      deps.set(result.schemaName, refSet);
+    }
+
+    // Map inputName back to schemaName for dependency lookup
+    const inputNameToSchema = new Map<string, string>();
+    for (const [schemaName, mapped] of typeNameMap) {
+      inputNameToSchema.set(mapped.inputName, schemaName);
+    }
+
+    // Topological sort (Kahn's algorithm)
+    const inDegree = new Map<string, number>();
+    const graph = new Map<string, string[]>();
+    for (const result of fixedResults) {
+      inDegree.set(result.schemaName, 0);
+      graph.set(result.schemaName, []);
+    }
+    for (const [schemaName, refInputNames] of deps) {
+      let count = 0;
+      for (const refInputName of refInputNames) {
+        const depSchema = inputNameToSchema.get(refInputName);
+        if (depSchema && graph.has(depSchema)) {
+          graph.get(depSchema)!.push(schemaName);
+          count++;
+        }
+      }
+      inDegree.set(schemaName, count);
+    }
+    const order: string[] = [];
+    const queue = [...inDegree.entries()].filter(([, d]) => d === 0).map(([n]) => n);
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      order.push(node);
+      for (const next of graph.get(node) ?? []) {
+        const d = inDegree.get(next)! - 1;
+        inDegree.set(next, d);
+        if (d === 0) queue.push(next);
+      }
+    }
+    // Append any remaining (cyclic) schemas at the end
+    for (const result of fixedResults) {
+      if (!order.includes(result.schemaName)) order.push(result.schemaName);
+    }
+
+    // Process in topological order, accumulating merged schemas
+    const mergedSet = new Set<string>();
+    const resultMap = new Map(fixedResults.map((r) => [r.schemaName, r]));
+
+    for (const schemaName of order) {
+      const result = resultMap.get(schemaName);
+      if (!result) continue;
+
+      let { input, output } = result;
+
+      // Apply unifications from already-determined merged schemas
+      for (const mergedSchema of mergedSet) {
+        const mapped = typeNameMap.get(mergedSchema);
+        if (!mapped) continue;
+        const escapedInput = escapeRegExp(mapped.inputName);
+        const escapedOutput = escapeRegExp(mapped.outputName);
+        input = input.replace(new RegExp(`\\b${escapedInput}\\b`, "g"), mapped.unifiedName);
+        output = output.replace(new RegExp(`\\b${escapedOutput}\\b`, "g"), mapped.unifiedName);
+      }
+
+      resultMap.set(schemaName, { ...result, input, output });
+
+      // Check if this schema is now mergeable
+      if (input === output) {
+        const mapped = typeNameMap.get(schemaName);
+        if (mapped && mapped.inputName !== mapped.unifiedName) {
+          mergedSet.add(schemaName);
+        }
+      }
+    }
+
+    fixedResults = fixedResults.map((r) => resultMap.get(r.schemaName) ?? r);
+  }
+
+  const declarations: string[] = [];
+
+  // Only generate declarations for exported schemas
+  for (const result of fixedResults) {
+    if (!result.isExported) {
+      continue;
+    }
+    const typeName = mapName(result.schemaName);
+    const declaration = formatAsDeclaration(result, typeName, options);
+    declarations.push(declaration);
+  }
+
+  return declarations.join("\n\n");
+}
+
+/**
+ * Collects the Valibot type helpers referenced by the extracted types.
+ *
+ * Branded and flavored primitives print as `string & Brand<"UserId">`, so the
+ * generated file has to import `Brand` / `Flavor` from "valibot".
+ */
+function usedValibotTypeNames(results: ExtractResult[]): string[] {
+  return VALIBOT_PRINTED_TYPE_NAMES.filter((name) => {
+    const pattern = new RegExp(`\\b${name}<`);
+    return results.some((r) => pattern.test(r.input) || pattern.test(r.output));
+  });
+}
+
+/**
+ * Generates a complete TypeScript declaration file content.
+ *
+ * @param results - Array of extraction results
+ * @param mapName - Function to map schema name to type names
+ * @param options - Declaration options
+ * @returns Complete .d.ts or .ts file content
+ */
+export function generateDeclarationFile(
+  results: ExtractResult[],
+  mapName: (schemaName: string) => MappedTypeName,
+  options: DeclarationOptions = {},
+): string {
+  const lines: string[] = [];
+
+  // Add header comment
+  lines.push("// Generated by vinfer - Do not edit manually");
+  lines.push("");
+
+  // Import the Valibot type helpers that show up in the generated types
+  const valibotTypeNames = usedValibotTypeNames(results);
+  if (valibotTypeNames.length > 0) {
+    lines.push(`import type { ${valibotTypeNames.join(", ")} } from "valibot";`);
+    lines.push("");
+  }
+
+  // Add type declarations
+  lines.push(formatMultipleAsDeclarations(results, mapName, options));
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+/**
+ * Converts absolute `import("...")` paths in generated type content to relative paths.
+ *
+ * TypeScript's type printer may emit absolute file paths in `import()` type syntax
+ * (e.g., `import("/Users/foo/bar/src/types/plugin").SomeType`).
+ * These must be converted to relative paths so the output is portable across machines.
+ *
+ * @param content - The generated file content
+ * @param outputFilePath - Absolute path to the output file
+ * @returns Content with absolute import paths replaced by relative paths
+ */
+export function relativizeImportPaths(content: string, outputFilePath: string): string {
+  const outputDir = dirname(outputFilePath);
+
+  return content.replace(/import\("([^"]+)"\)/g, (_match, importPath: string) => {
+    if (!isAbsolute(importPath)) {
+      return _match;
+    }
+    let rel = relative(outputDir, importPath);
+    if (!rel.startsWith(".")) {
+      rel = "./" + rel;
+    }
+    return `import("${rel}")`;
+  });
+}

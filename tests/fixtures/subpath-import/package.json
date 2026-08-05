@@ -1,0 +1,9 @@
+{
+  "name": "subpath-import-fixture",
+  "type": "module",
+  "imports": {
+    "#/*": "./schemas/*",
+    "#src/*": "./schemas/*",
+    "#shared": "./schemas/shared.js"
+  }
+}

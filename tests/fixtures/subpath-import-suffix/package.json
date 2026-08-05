@@ -1,0 +1,7 @@
+{
+  "name": "subpath-import-suffix-fixture",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  }
+}
