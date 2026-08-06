@@ -9,6 +9,7 @@
   "labels": ["dependencies"],
   "minimumReleaseAge": "7 days",
   "prConcurrentLimit": 5,
+  "rangeStrategy": "bump",
   "packageRules": [
     {
       "matchDatasources": ["npm"],
@@ -16,7 +17,8 @@
     },
     {
       "matchDepTypes": ["devDependencies"],
-      "automerge": true
+      "automerge": true,
+      "rangeStrategy": "bump"
     },
     {
       "groupName": "testing",
