@@ -1,6 +1,6 @@
 {
   "name": "vinfer",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Extract input/output types from Valibot schemas",
   "keywords": [
     "schema",
