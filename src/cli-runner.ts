@@ -90,7 +90,7 @@ export async function runCLI(files: string[], options: CLIOptions): Promise<void
   // Resolve file paths (support glob patterns)
   logVerbose("Resolving input files...");
   const fileResolver = new FileResolver();
-  const resolvedFiles = await fileResolver.resolveInputFiles(inputFiles, cwd);
+  const resolvedFiles = await fileResolver.resolveInputFiles(inputFiles, cwd, config.exclude);
 
   if (resolvedFiles.length === 0) {
     throw new NoFilesMatchedError(inputFiles);

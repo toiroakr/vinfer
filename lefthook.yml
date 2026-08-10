@@ -8,7 +8,7 @@ pre-commit:
       priority: 1
     oxfmt:
       glob: "*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc,md}"
-      run: pnpm oxfmt --write {staged_files}
+      run: pnpm oxfmt --write --no-error-on-unmatched-pattern {staged_files}
       stage_fixed: true
       priority: 2
     typecheck:
