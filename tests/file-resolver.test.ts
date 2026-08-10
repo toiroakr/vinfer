@@ -28,6 +28,17 @@ describe("FileResolver.resolveInputFiles", () => {
     expect(files).toEqual([...files].sort());
     expect(files.length).toBeGreaterThan(1);
   });
+
+  it("excludes files matching the exclude patterns", async () => {
+    const files = await resolver.resolveInputFiles("fixtures/import-test/*.ts", testsDir, [
+      "**/consumer.ts",
+    ]);
+    expect(files).toEqual([
+      resolve(testsDir, "fixtures/import-test/index.ts"),
+      resolve(testsDir, "fixtures/import-test/re-export-consumer.ts"),
+      resolve(testsDir, "fixtures/import-test/shared.ts"),
+    ]);
+  });
 });
 
 describe("FileResolver.resolveOutputPath", () => {

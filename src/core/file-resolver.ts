@@ -11,11 +11,13 @@ export class FileResolver {
    *
    * @param pattern - Glob pattern(s) to match
    * @param cwd - Current working directory (default: process.cwd())
+   * @param exclude - Glob pattern(s) to exclude
    * @returns Array of absolute file paths
    */
   async resolveInputFiles(
     pattern: string | string[],
     cwd: string = process.cwd(),
+    exclude?: string[],
   ): Promise<string[]> {
     const patterns = Array.isArray(pattern) ? pattern : [pattern];
     const allFiles: string[] = [];
@@ -25,6 +27,7 @@ export class FileResolver {
         cwd,
         absolute: true,
         nodir: true,
+        ignore: exclude,
       });
       allFiles.push(...files);
     }
