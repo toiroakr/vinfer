@@ -32,6 +32,11 @@
     {
       "groupName": "typescript",
       "matchPackageNames": ["typescript", "@types/*", "@typescript/*"]
+    },
+    {
+      "matchDepTypes": ["peerDependencies"],
+      "rangeStrategy": "widen",
+      "automerge": false
     }
   ]
 }
