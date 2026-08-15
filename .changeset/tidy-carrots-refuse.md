@@ -13,11 +13,16 @@ Fix recursive schema generation.
   value schema is described at the path of the field holding the record, so the
   index signature no longer counts as a path segment of its own and inlined
   levels keep their TSDoc.
+- A reference to a generated type now survives being nested inside a schema that
+  generates none. A non-exported schema still has to be inlined, but it is
+  inlined from its own resolved form, so the named references it holds are kept
+  instead of the whole structure being re-expanded.
 - A recursive schema imported from another generated file is referenced by name
   and `import type`d from that file, instead of being inlined into an
-  approximation that lost its recursion point. When no generated file declares
-  it, the recursion point keeps the index signature or array the getter
-  describes rather than collapsing to a bare `any`.
+  approximation that lost its recursion point. When nothing declares a name for
+  a recursive schema - neither this file nor another generated one - the
+  recursion point keeps the index signature or array the getter describes rather
+  than collapsing to a bare `any`.
 - `mergeSame` now merges recursive schemas: the two directions of a schema that
   names itself are compared with those self-references unified, so a recursive
   schema whose input and output agree emits a single type plus `type XInput = X`.

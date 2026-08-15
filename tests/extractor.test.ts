@@ -48,6 +48,8 @@ const KNOWN_TYPE_DIFFERENCES: Record<string, string> = {
     "v.intersect() infers `A & B`; vinfer flattens it into a single object literal.",
   "strict-object-schema.test.ts":
     "v.looseObject() / v.objectWithRest() infer `entries & { [key: string]: ... }`; vinfer flattens the index signature into the object.",
+  "non-generated-intermediate-schema.test.ts":
+    "OrganizationSchema holds a recursive schema that is not exported: nothing declares a name for it, so its recursion is inlined as far as it goes and approximated at the recursion point. Everything else in the fixture - including the references reached through the non-generated intermediates - matches exactly.",
   "recursive-record-schema.test.ts":
     "Same as getter-schema.test.ts: a getter that refers back to its own schema is typed as any (or, when annotated, as one inlined copy of the schema) until vinfer rebuilds it from the AST.",
   "mixed-union-reference-schema.test.ts":
@@ -184,6 +186,11 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     extractor,
     "recursive-record-schema",
     "should generate TypeScript declarations with annotated recursive getters",
+  );
+  createSchemaTest(
+    extractor,
+    "non-generated-intermediate-schema",
+    "should keep named references through schemas that generate no types",
   );
   createSchemaTest(
     extractor,
@@ -449,6 +456,105 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     });
   });
 
+  describe("non-generated-intermediate-schema.ts", () => {
+    /**
+     * Runs the fixture through the same steps the CLI does for
+     * `--with-descriptions`.
+     */
+    async function generateWithDescriptions(): Promise<string> {
+      const filePath = resolve(fixturesDir, "non-generated-intermediate-schema.ts");
+      const results = extractor.extractAll(filePath);
+      const descriptionExtractor = new DescriptionExtractor();
+
+      const descriptions = await descriptionExtractor.extractDescriptions(
+        filePath,
+        results.map((r) => r.schemaName),
+      );
+
+      return generateDeclarationFile(
+        results.map((result) => {
+          const desc = descriptions.get(result.schemaName);
+          if (!desc) {
+            return result;
+          }
+          return { ...result, description: desc.description, fieldDescriptions: desc.fields };
+        }),
+        mapName,
+      );
+    }
+
+    it("keeps referencing a generated type through schemas that generate none", async () => {
+      const output = await generateWithDescriptions();
+
+      // The reference works one level down, which is the baseline.
+      expect(output).toContain("direct: IntermediateNodeInput;");
+
+      // It has to survive being nested inside an inlined schema too - through
+      // one non-generated level, and through two.
+      expect(output).toContain(
+        [
+          "  viaGroup: {",
+          "    members: IntermediateNodeInput[];",
+          "    byKey: {",
+          "      [x: string]: IntermediateNodeInput;",
+          "    };",
+          "    lead?: IntermediateNodeInput;",
+          "  };",
+        ].join("\n"),
+      );
+      expect(output).toContain(
+        [
+          "  viaDepartment: {",
+          "    /** The group */",
+          "    group: {",
+          "      members: IntermediateNodeInput[];",
+        ].join("\n"),
+      );
+
+      // The output direction resolves to the output names, not the input ones.
+      expect(output).toContain("members: IntermediateNodeOutput[];");
+    });
+
+    it("approximates a recursive schema no file declares a name for", async () => {
+      const output = await generateWithDescriptions();
+
+      // Nothing declares this one, so it stays inlined - but the recursion point
+      // keeps its index signature, without which property access would go
+      // unchecked, and no undeclared name leaks out.
+      expect(output).toContain(
+        [
+          "  localRecursive: {",
+          "    /** The local label */",
+          "    label: string;",
+          "    kids: {",
+          "      [x: string]: {",
+          "        /** The local label */",
+          "        label: string;",
+          "        kids: {",
+          "          [x: string]: any;",
+          "        };",
+          "      };",
+          "    };",
+          "  };",
+        ].join("\n"),
+      );
+      expect(output).not.toContain("LocalRecursive");
+      expect(output).not.toMatch(/kids: any/);
+    });
+
+    it("keeps v.description() on every inlined level", async () => {
+      const output = await generateWithDescriptions();
+
+      // Once per direction, at each level it occurs on: the schema's own field,
+      // the copy behind the non-generated intermediate, and the copy behind the
+      // one nested inside that.
+      expect(output.match(/\/\*\* The group \*\//g)).toHaveLength(2);
+      // Depth 0 and the level below the index signature, in both directions.
+      expect(output.match(/\/\*\* The local label \*\//g)).toHaveLength(4);
+      expect(output.match(/\/\*\* The node name \*\//g)).toHaveLength(2);
+    });
+  });
+
   describe("cross-file-recursive", () => {
     it("falls back to an index signature, never a bare any, without an importable declaration", () => {
       const results = extractor.extractAll(
@@ -473,7 +579,8 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
 
       const tree = results.find((r) => r.schemaName === "CrossFileTreeSchema");
       expect(tree?.input).toBe(
-        "{ root: CrossFileNodeSchemaInput; index: { [x: string]: CrossFileNodeSchemaInput; }; }",
+        "{ root: CrossFileNodeSchemaInput; index: { [x: string]: CrossFileNodeSchemaInput; }; " +
+          "group: { members: CrossFileNodeSchemaInput[]; }; }",
       );
 
       const node = results.find((r) => r.schemaName === "CrossFileNodeSchema");

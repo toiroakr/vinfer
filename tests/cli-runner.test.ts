@@ -243,6 +243,10 @@ describe("runCLI", () => {
           "  index: {",
           "    [x: string]: CrossFileNode;",
           "  };",
+          "  /** Through a non-generated schema */",
+          "  group: {",
+          "    members: CrossFileNode[];",
+          "  };",
           "};",
         ].join("\n"),
       );
