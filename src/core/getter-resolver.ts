@@ -96,37 +96,57 @@ export class GetterResolver {
    * optional whether or not it really is. Both are rebuilt here from what the
    * getter's AST actually says.
    *
+   * When the getter carries an explicit return type annotation, TypeScript gets
+   * one level further before giving up, so the printed type holds a full inline
+   * copy of the schema whose innermost recursion point is the `any`. That copy
+   * says nothing the self-reference does not, so it is collapsed away too - see
+   * `collapseInlinedCopies`.
+   *
    * @param typeStr - The extracted type string with `any` placeholders
    * @param getterFields - Map of field name to getter field info
    * @param typeName - The generated type name to use for self-references
+   * @param options - Set `collapseInlinedCopies: false` to keep the inline copy,
+   *   which is what callers that have no name to point at have to do
    * @returns The resolved type string with proper self-references
    */
   resolveAnyTypes(
     typeStr: string,
     getterFields: Map<string, GetterFieldInfo>,
     typeName: string,
+    options: { collapseInlinedCopies?: boolean } = {},
   ): string {
+    const { collapseInlinedCopies = true } = options;
+    const selfRefFields = [...getterFields].filter(([, info]) => info.isSelfRef);
+    const selfRefNames = selfRefFields.map(([fieldName]) => fieldName);
+
     let result = typeStr;
-
-    for (const [fieldName, info] of getterFields) {
-      if (!info.isSelfRef) {
-        continue;
-      }
-
-      result = this.replaceFieldPlaceholder(result, fieldName, typeName, info);
+    for (const [fieldName, info] of selfRefFields) {
+      result = this.replaceFieldPlaceholder(
+        result,
+        fieldName,
+        typeName,
+        info,
+        collapseInlinedCopies ? selfRefNames : [],
+      );
     }
 
     return result;
   }
 
   /**
-   * Rewrites every `any`-valued occurrence of a field to the getter's real type.
+   * Rewrites every recursive occurrence of a field to the getter's real type.
+   *
+   * A field qualifies when its printed type is an `any` placeholder, or - when
+   * `collapsibleFields` is given - when it is an inline copy of the schema,
+   * recognised by an `any` placeholder for one of those fields somewhere inside
+   * it.
    */
   private replaceFieldPlaceholder(
     typeStr: string,
     fieldName: string,
     typeName: string,
     info: GetterFieldInfo,
+    collapsibleFields: string[],
   ): string {
     const replacement = buildReplacementType(typeName, info);
     const marker = info.isOptional ? "?" : "";
@@ -137,7 +157,8 @@ export class GetterResolver {
       const field = findFieldValue(result, fieldName, searchFrom);
       if (!field) return result;
 
-      if (!isAnyPlaceholder(result.slice(field.valueStart, field.valueEnd))) {
+      const value = result.slice(field.valueStart, field.valueEnd);
+      if (!isAnyPlaceholder(value) && !isInlinedRecursiveCopy(value, collapsibleFields)) {
         searchFrom = field.valueStart;
         continue;
       }
@@ -167,10 +188,40 @@ function buildReplacementType(typeName: string, info: GetterFieldInfo): string {
 
 /**
  * Checks whether a printed field type is nothing but an `any` placeholder.
+ *
+ * An annotated optional getter prints its placeholder as `any | undefined`: the
+ * annotation tells TypeScript the key may be absent even though it cannot tell
+ * what the key holds. The `| undefined` carries no information the rebuilt
+ * optional key does not, so it is ignored here.
  */
 function isAnyPlaceholder(value: string): boolean {
-  const normalized = value.trim().replace(/^readonly\s+/, "");
+  const normalized = value
+    .trim()
+    .replace(/^readonly\s+/, "")
+    .replace(/\s*\|\s*undefined$/, "")
+    .trim();
   return /^any(\[\])?$/.test(normalized) || /^\{\s*\[x: string\]:\s*any;?\s*\}$/.test(normalized);
+}
+
+/**
+ * Checks whether a printed field type is an inline copy of the schema it belongs
+ * to, rather than the schema's own printed shape.
+ *
+ * The copy always bottoms out in an `any` placeholder for one of the schema's
+ * recursive getter fields - that placeholder is precisely where TypeScript gave
+ * up - so finding one inside the value identifies the whole value as an unfolded
+ * step of the recursion.
+ */
+function isInlinedRecursiveCopy(value: string, selfRefFields: string[]): boolean {
+  return selfRefFields.some((fieldName) => {
+    let searchFrom = 0;
+    for (;;) {
+      const nested = findFieldValue(value, fieldName, searchFrom);
+      if (!nested) return false;
+      if (isAnyPlaceholder(value.slice(nested.valueStart, nested.valueEnd))) return true;
+      searchFrom = nested.valueStart;
+    }
+  });
 }
 
 /**

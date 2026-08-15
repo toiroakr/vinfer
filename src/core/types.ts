@@ -47,6 +47,12 @@ export interface ExtractResult {
   output: string;
   /** Whether the original schema was exported */
   isExported: boolean;
+  /**
+   * Absolute path of the file declaring the schema, when it lives in another
+   * file and the types generated for it are referenced by name instead of being
+   * inlined. The generated file has to `import type` them from there.
+   */
+  importedFrom?: string;
   /** Schema-level description from `v.description()` */
   description?: string;
   /** Field descriptions from `v.description()` */
@@ -125,4 +131,11 @@ export interface DeclarationOptions {
   outputOnly?: boolean;
   /** Merge input/output if they are identical */
   mergeSame?: boolean;
+  /**
+   * Module specifier to `import type` a schema's generated types from, keyed by
+   * schema name. Only schemas whose `ExtractResult` carries `importedFrom` are
+   * looked up here; an entry is what turns a cross-file reference into an
+   * import instead of leaving the name undeclared.
+   */
+  importSources?: ReadonlyMap<string, string>;
 }

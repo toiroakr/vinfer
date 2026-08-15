@@ -48,6 +48,8 @@ const KNOWN_TYPE_DIFFERENCES: Record<string, string> = {
     "v.intersect() infers `A & B`; vinfer flattens it into a single object literal.",
   "strict-object-schema.test.ts":
     "v.looseObject() / v.objectWithRest() infer `entries & { [key: string]: ... }`; vinfer flattens the index signature into the object.",
+  "recursive-record-schema.test.ts":
+    "Same as getter-schema.test.ts: a getter that refers back to its own schema is typed as any (or, when annotated, as one inlined copy of the schema) until vinfer rebuilds it from the AST.",
   "mixed-union-reference-schema.test.ts":
     "RecursiveUnionSchema's non-exported recursive member is inlined, and its recursion collapses to any[].",
 };
@@ -177,6 +179,11 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     extractor,
     "getter-schema",
     "should generate TypeScript declarations with getter-based recursive schemas",
+  );
+  createSchemaTest(
+    extractor,
+    "recursive-record-schema",
+    "should generate TypeScript declarations with annotated recursive getters",
   );
   createSchemaTest(
     extractor,
@@ -338,6 +345,160 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
       await expect(output).toMatchFileSnapshot(
         "__file_snapshots__/nested-inline-description-schema.ts",
       );
+    });
+  });
+
+  describe("recursive-record-schema.ts", () => {
+    /**
+     * Runs the fixture through the same steps the CLI does for
+     * `--with-descriptions`.
+     */
+    async function generateWithDescriptions(): Promise<string> {
+      const filePath = resolve(fixturesDir, "recursive-record-schema.ts");
+      const results = extractor.extractAll(filePath);
+      const descriptionExtractor = new DescriptionExtractor();
+
+      const descriptions = await descriptionExtractor.extractDescriptions(
+        filePath,
+        results.map((r) => r.schemaName),
+      );
+
+      const resultsWithDescriptions = results.map((result) => {
+        const desc = descriptions.get(result.schemaName);
+        if (!desc) {
+          return result;
+        }
+        return {
+          ...result,
+          description: desc.description,
+          fieldDescriptions: desc.fields,
+        };
+      });
+
+      return generateDeclarationFile(resultsWithDescriptions, mapName);
+    }
+
+    it("emits the self-reference straight away instead of one inlined copy first", async () => {
+      const output = await generateWithDescriptions();
+
+      // Required key: `children: Record<string, Self>`.
+      expect(output).toContain(
+        [
+          "export type RecursiveRecordInput = {",
+          "  /** The node name */",
+          "  name: string;",
+          "  children: {",
+          "    [x: string]: RecursiveRecordInput;",
+          "  };",
+          "};",
+        ].join("\n"),
+      );
+
+      // Optional key: `children?: Record<string, Self>`, both when the getter is
+      // annotated and when its shape is reconstructed from the AST.
+      for (const typeName of ["OptionalRecursiveRecordInput", "InferredOptionalRecordInput"]) {
+        expect(output).toMatch(
+          new RegExp(
+            `export type ${typeName} = \\{\\n  /\\*\\* The \\w+ node name \\*/\\n  name: string;\\n  children\\?: \\{\\n    \\[x: string\\]: ${typeName};\\n  \\};\\n\\};`,
+          ),
+        );
+      }
+
+      // Array-shaped recursion stays a plain self-referencing array.
+      expect(output).toContain("children: RecursiveArrayInput[];");
+
+      // No level of any of them is an expanded copy of the schema.
+      expect(output).not.toMatch(/children\??: \{\n\s+\[x: string\]: \{/);
+      expect(output).not.toContain("any");
+    });
+
+    it("keeps v.description() on every inlined level", async () => {
+      const output = await generateWithDescriptions();
+
+      // A description on a field behind an index signature is written at the
+      // path of the field holding the record, so the index signature must not
+      // count as a path segment of its own.
+      expect(output).toContain(
+        [
+          "export type LeafRecordInput = {",
+          "  leaves: {",
+          "    [x: string]: {",
+          "      /** The leaf label */",
+          "      label: string;",
+          "    };",
+          "  };",
+          "};",
+        ].join("\n"),
+      );
+
+      // Every recursive schema keeps its description in both directions.
+      expect(output.match(/\/\*\* The node name \*\//g)).toHaveLength(2);
+      expect(output.match(/\/\*\* The optional node name \*\//g)).toHaveLength(2);
+      expect(output.match(/\/\*\* The inferred node name \*\//g)).toHaveLength(2);
+      expect(output.match(/\/\*\* The array node name \*\//g)).toHaveLength(2);
+      expect(output.match(/\/\*\* The leaf label \*\//g)).toHaveLength(2);
+    });
+
+    it("merges the two directions of a recursive schema with mergeSame", () => {
+      const results = extractor.extractAll(resolve(fixturesDir, "recursive-record-schema.ts"));
+      const output = generateDeclarationFile(results, mapName, { mergeSame: true });
+
+      expect(output).toContain("export type RecursiveRecordOutput = RecursiveRecord;");
+      expect(output).toContain("export type RecursiveRecordInput = RecursiveRecord;");
+      expect(output).toContain("[x: string]: RecursiveRecord;");
+    });
+  });
+
+  describe("cross-file-recursive", () => {
+    it("falls back to an index signature, never a bare any, without an importable declaration", () => {
+      const results = extractor.extractAll(
+        resolve(fixturesDir, "cross-file-recursive/tree-schema.ts"),
+      );
+      const tree = results.find((r) => r.schemaName === "CrossFileTreeSchema");
+
+      // Nothing declares the imported schema's types here, so it stays inlined -
+      // but its recursion point keeps the index signature, without which
+      // property access would go unchecked.
+      expect(tree?.importedFrom).toBeUndefined();
+      expect(tree?.input).toContain("children: { [x: string]: any; }");
+      expect(tree?.input).not.toMatch(/children: any/);
+    });
+
+    it("references the imported recursive schema by name when its file is generated too", () => {
+      const nodeFile = resolve(fixturesDir, "cross-file-recursive/node-schema.ts");
+      const results = extractor.extractAll(
+        resolve(fixturesDir, "cross-file-recursive/tree-schema.ts"),
+        { importableFiles: new Set([nodeFile]) },
+      );
+
+      const tree = results.find((r) => r.schemaName === "CrossFileTreeSchema");
+      expect(tree?.input).toBe(
+        "{ root: CrossFileNodeSchemaInput; index: { [x: string]: CrossFileNodeSchemaInput; }; }",
+      );
+
+      const node = results.find((r) => r.schemaName === "CrossFileNodeSchema");
+      expect(node?.importedFrom).toBe(nodeFile);
+      expect(node?.isExported).toBe(false);
+    });
+
+    it("imports the referenced types from the file that declares them", () => {
+      const nodeFile = resolve(fixturesDir, "cross-file-recursive/node-schema.ts");
+      const results = extractor.extractAll(
+        resolve(fixturesDir, "cross-file-recursive/tree-schema.ts"),
+        { importableFiles: new Set([nodeFile]) },
+      );
+
+      const output = generateDeclarationFile(results, mapName, {
+        importSources: new Map([["CrossFileNodeSchema", "./node-schema.generated"]]),
+      });
+
+      expect(output).toContain(
+        'import type { CrossFileNodeInput, CrossFileNodeOutput } from "./node-schema.generated";',
+      );
+      expect(output).toContain("root: CrossFileNodeInput;");
+      expect(output).toContain("[x: string]: CrossFileNodeOutput;");
+      // The imported schema is declared by the other file, not re-declared here.
+      expect(output).not.toContain("export type CrossFileNodeInput = {");
     });
   });
 
