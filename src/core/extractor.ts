@@ -1,4 +1,5 @@
 import { Project, SourceFile, TypeFormatFlags, ts } from "ts-morph";
+import { resolve as resolvePath } from "pathe";
 import {
   NORMALIZE_TYPE_DEFINITION,
   NORMALIZE_TYPE_NAMES,
@@ -34,6 +35,81 @@ interface RawSchemaType {
    * getter describes instead.
    */
   approximation?: { input: string; output: string };
+}
+
+/**
+ * Collapses a `| undefined` TypeScript's printer spelled more than once.
+ *
+ * A homomorphic mapped type - which is what `__Normalize` is - copies an
+ * optional property by its indexed access, so a property declared
+ * `required?: boolean | undefined` prints as its declared type *and* gets the
+ * `| undefined` the printer appends for an optional key under
+ * `strictNullChecks`, yielding `required?: boolean | undefined | undefined`.
+ * No type can hold that union twice, so dropping the repeat loses nothing.
+ *
+ * String literal types are skipped: `"a | undefined | undefined"` is text, not a
+ * union.
+ */
+function collapseRepeatedUndefined(typeStr: string): string {
+  if (!typeStr.includes("undefined")) {
+    return typeStr;
+  }
+
+  let result = "";
+  let segmentStart = 0;
+  let inString = false;
+  let stringChar = "";
+
+  const flush = (end: number) => {
+    const segment = typeStr.slice(segmentStart, end);
+    result += inString
+      ? segment
+      : segment.replace(/(\|\s*undefined\b)(\s*\|\s*undefined\b)+/g, "$1");
+    segmentStart = end;
+  };
+
+  for (let index = 0; index < typeStr.length; index++) {
+    const char = typeStr[index];
+    if ((char !== '"' && char !== "'" && char !== "`") || typeStr[index - 1] === "\\") {
+      continue;
+    }
+
+    if (!inString) {
+      flush(index);
+      inString = true;
+      stringChar = char;
+    } else if (char === stringChar) {
+      flush(index + 1);
+      inString = false;
+      stringChar = "";
+    }
+  }
+
+  flush(typeStr.length);
+  return result;
+}
+
+/**
+ * Rewrites the relative specifiers in printed `import("...")` types to absolute
+ * paths.
+ *
+ * TypeScript prints such a specifier relative to the file the type was read
+ * from, which is not where the generated file ends up. Absolute is the form
+ * `relativizeImportPaths` already knows how to re-anchor onto the output
+ * directory, and it survives results from several source files being merged
+ * into one output file.
+ */
+function absolutizeImportPaths(typeStr: string, sourceDir: string): string {
+  if (!typeStr.includes('import("')) {
+    return typeStr;
+  }
+
+  return typeStr.replace(/import\("([^"]+)"\)/g, (match, importPath: string) => {
+    if (!importPath.startsWith(".")) {
+      return match;
+    }
+    return `import("${resolvePath(sourceDir, importPath)}")`;
+  });
 }
 
 /**
@@ -465,11 +541,8 @@ export class ValibotTypeExtractor {
   /**
    * Picks the form a schema whose types nothing declares is inlined as.
    *
-   * The resolved form is what a reference should carry - it keeps the names of
-   * the schemas that *are* declared. A recursive schema names itself in it
-   * though, and that name is never declared, so those fall back to the
-   * approximation. Returns undefined when neither form is usable, leaving the
-   * reference as TypeScript printed it.
+   * @returns The type to inline, or undefined to leave the reference as
+   *   TypeScript printed it
    */
   private inlinableForm(
     resolved: string | undefined,
@@ -477,13 +550,29 @@ export class ValibotTypeExtractor {
     refSchema: string,
     kind: "Input" | "Output",
   ): string | undefined {
-    const candidate = resolved ?? (kind === "Input" ? raw.input : raw.output);
-    const selfName = new RegExp(`\\b${this.escapeRegExp(`${refSchema}${kind}`)}\\b`);
+    const printed = kind === "Input" ? raw.input : raw.output;
+    const approximation = kind === "Input" ? raw.approximation?.input : raw.approximation?.output;
+    const candidate = resolved ?? printed;
 
-    if (!selfName.test(candidate)) {
-      return candidate;
+    // A recursive schema names itself, and nothing declares that name here, so
+    // only the approximation can be inlined.
+    if (new RegExp(`\\b${this.escapeRegExp(`${refSchema}${kind}`)}\\b`).test(candidate)) {
+      return approximation;
     }
-    return kind === "Input" ? raw.approximation?.input : raw.approximation?.output;
+
+    // The schema's own printed form is already an approximation - it is a
+    // recursive one from a file that gets no generated types - and says more
+    // than what TypeScript printed here, which lost the recursion entirely.
+    if (approximation !== undefined) {
+      return approximation;
+    }
+
+    // Otherwise only a form that resolving actually changed is worth inlining:
+    // it carries names TypeScript could not have printed. When resolving
+    // changed nothing, what TypeScript expanded at the reference site is the
+    // more faithful of the two - an explicit `v.GenericSchema<T>` annotation is
+    // printed as written, down to the `import()` types it names.
+    return candidate !== printed ? candidate : undefined;
   }
 
   /**
@@ -692,6 +781,9 @@ export class ValibotTypeExtractor {
       }
     }
 
+    rawType = collapseRepeatedUndefined(rawType);
+    rawType = absolutizeImportPaths(rawType, sourceFile.getDirectoryPath());
+
     // Reduce Valibot type references (Brand/Flavor) to their bare names so the
     // generated file can import them from "valibot" directly.
     return ValibotBindings.from(sourceFile).canonicalizeTypeNames(rawType);
@@ -729,7 +821,7 @@ export class ValibotTypeExtractor {
     }
 
     const resolveOptions = { collapseInlinedCopies: isImportable };
-    return {
+    const resolved = {
       input: this.getterResolver.resolveAnyTypes(
         inputType,
         getterFields,
@@ -742,8 +834,14 @@ export class ValibotTypeExtractor {
         isImportable ? `${localName}Output` : "any",
         resolveOptions,
       ),
-      ...(isImportable ? { importedFrom: importedSourceFile.getFilePath() } : {}),
     };
+
+    if (isImportable) {
+      return { ...resolved, importedFrom: importedSourceFile.getFilePath() };
+    }
+    // No file will declare a name for this one, so what it printed is itself
+    // the approximation a reference has to be inlined as.
+    return { ...resolved, approximation: resolved };
   }
 
   /**

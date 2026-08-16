@@ -297,6 +297,29 @@ describe("runCLI", () => {
     });
   });
 
+  it("rewrites an annotation's import() specifier to reach from the output file", async () => {
+    cpSync(
+      join(fixturesDir, "annotated-inline-types.ts"),
+      join(workDir, "schemas/annotated-inline-types.ts"),
+    );
+    cpSync(
+      join(fixturesDir, "annotated-inline-schema.ts"),
+      join(workDir, "schemas/annotated-inline-schema.ts"),
+    );
+
+    await run(["schemas/annotated-inline-schema.ts"], { outDir: "types", suffix: "Schema" });
+
+    const generated = readFileSync(
+      join(workDir, "types/annotated-inline-schema.types.ts"),
+      "utf-8",
+    );
+    // Written as "./annotated-inline-types" in the schema file, which resolves
+    // to nothing from types/.
+    expect(generated).toContain('import("../schemas/annotated-inline-types").AnnotatedMeta');
+    expect(generated).not.toContain('import("./annotated-inline-types")');
+    expect(generated).not.toMatch(/(?:boolean|string) \| undefined \| undefined/);
+  });
+
   it("reads options from vinfer.config.mjs", async () => {
     writeFileSync(
       join(workDir, "vinfer.config.mjs"),

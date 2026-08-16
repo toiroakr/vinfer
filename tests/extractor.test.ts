@@ -456,6 +456,58 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     });
   });
 
+  describe("annotated-inline-schema.ts", () => {
+    it("prints an optional key's `| undefined` once, however the annotation spells it", () => {
+      const results = extractor.extractAll(resolve(fixturesDir, "annotated-inline-schema.ts"));
+      const output = generateDeclarationFile(results, mapName);
+
+      // `__Normalize` is a mapped type, and a mapped type copying an optional
+      // property whose declared type already names `undefined` makes
+      // TypeScript's printer spell it twice. No type can hold that.
+      expect(output).not.toMatch(/(?:boolean|string) \| undefined \| undefined/);
+      expect(output).toContain(
+        [
+          "  node: {",
+          "    kind: string;",
+          "    meta: {",
+          "      required?: boolean | undefined;",
+          "      label?: string | undefined;",
+          "    };",
+          "  };",
+        ].join("\n"),
+      );
+    });
+
+    it("does not collapse text that only looks like a repeated union", () => {
+      const results = extractor.extractAll(resolve(fixturesDir, "annotated-inline-schema.ts"));
+      const literal = results.find((r) => r.schemaName === "LiteralUndefinedSchema");
+
+      expect(literal?.input).toBe('{ label: "a | undefined | undefined"; }');
+    });
+
+    it("leaves an annotation's own printed form to TypeScript when inlining it", () => {
+      const results = extractor.extractAll(resolve(fixturesDir, "annotated-inline-schema.ts"));
+      const holder = results.find((r) => r.schemaName === "AnnotatedHolderSchema");
+
+      // The annotation is printed as written, `import()` types and all, so it
+      // says nothing TypeScript's own expansion at the reference site does not.
+      // Inlining it would only drag the module reference along.
+      expect(holder?.input).not.toContain("import(");
+    });
+
+    it("makes an annotation's import() specifier absolute, ready to re-anchor", () => {
+      const results = extractor.extractAll(resolve(fixturesDir, "annotated-inline-schema.ts"));
+      const node = results.find((r) => r.schemaName === "AnnotatedNodeSchema");
+
+      // TypeScript prints the specifier relative to the file the type was read
+      // from, which is not where the generated file goes. Absolute is the form
+      // `relativizeImportPaths` re-anchors onto the output directory.
+      expect(node?.input).toContain(
+        `import("${resolve(fixturesDir, "annotated-inline-types")}").AnnotatedMeta`,
+      );
+    });
+  });
+
   describe("non-generated-intermediate-schema.ts", () => {
     /**
      * Runs the fixture through the same steps the CLI does for

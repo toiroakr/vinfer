@@ -26,3 +26,12 @@ Fix recursive schema generation.
 - `mergeSame` now merges recursive schemas: the two directions of a schema that
   names itself are compared with those self-references unified, so a recursive
   schema whose input and output agree emits a single type plus `type XInput = X`.
+- An optional key no longer prints `| undefined` twice. A mapped type copying an
+  optional property whose declared type already names `undefined` makes
+  TypeScript's printer spell it once from the property's type and once for the
+  optional key, which surfaced through any `v.GenericSchema<T>` annotation whose
+  `T` wrote `foo?: string | undefined`.
+- The `import()` types an explicit annotation carries are now rewritten to reach
+  from the output file. TypeScript prints those specifiers relative to the schema
+  file, so a relative one (`./types`) resolved to nothing from the output
+  directory; projects using path aliases were unaffected.
