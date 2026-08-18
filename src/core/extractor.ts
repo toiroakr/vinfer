@@ -27,6 +27,13 @@ interface RawSchemaType {
   /** Set when the schema is declared in another file that generates types of its own. */
   importedFrom?: string;
   /**
+   * The schema's name as declared in `importedFrom`, when it differs from the
+   * local name it is cached/keyed under (an aliased named import). The
+   * declaring file names its generated types after this one, not after the
+   * local alias.
+   */
+  originalName?: string;
+  /**
    * The form to inline this schema as when its own name cannot be used.
    *
    * Only recursive schemas that no file declares types for need one: their
@@ -110,6 +117,14 @@ function absolutizeImportPaths(typeStr: string, sourceDir: string): string {
     }
     return `import("${resolvePath(sourceDir, importPath)}")`;
   });
+}
+
+/**
+ * Falls back to a schema's printed input when TypeScript gave up on its
+ * output, printing it as a bare `any`.
+ */
+function withOutputFallback(printedOutput: string, printedInput: string): string {
+  return printedOutput === "any" ? printedInput : printedOutput;
 }
 
 /**
@@ -344,8 +359,7 @@ export class ValibotTypeExtractor {
       try {
         const rawInput = this.resolveType(sourceFile, "__TempInput");
         const printedOutput = this.resolveType(sourceFile, "__TempOutput");
-        // A schema whose output TypeScript gave up on is described by its input.
-        const rawOutput = printedOutput === "any" ? rawInput : printedOutput;
+        const rawOutput = withOutputFallback(printedOutput, rawInput);
 
         let input = rawInput;
         let output = rawOutput;
@@ -514,7 +528,9 @@ export class ValibotTypeExtractor {
         input: raw.input,
         output: raw.output,
         isExported: false, // Imported schemas are not re-exported
-        ...(raw.importedFrom ? { importedFrom: raw.importedFrom } : {}),
+        ...(raw.importedFrom
+          ? { importedFrom: raw.importedFrom, originalName: raw.originalName }
+          : {}),
       });
     }
 
@@ -809,8 +825,7 @@ export class ValibotTypeExtractor {
   ): Omit<RawSchemaType, "isExported"> {
     const inputType = this.resolveType(importedSourceFile, "__TempInput");
     const rawOutputType = this.resolveType(importedSourceFile, "__TempOutput");
-    // A schema whose output TypeScript gave up on is described by its input.
-    const outputType = rawOutputType === "any" ? inputType : rawOutputType;
+    const outputType = withOutputFallback(rawOutputType, inputType);
 
     const getterFields = this.getterResolver
       .analyzeGetterFields(importedSourceFile, new Set([originalName]))
@@ -837,7 +852,7 @@ export class ValibotTypeExtractor {
     };
 
     if (isImportable) {
-      return { ...resolved, importedFrom: importedSourceFile.getFilePath() };
+      return { ...resolved, importedFrom: importedSourceFile.getFilePath(), originalName };
     }
     // No file will declare a name for this one, so what it printed is itself
     // the approximation a reference has to be inlined as.

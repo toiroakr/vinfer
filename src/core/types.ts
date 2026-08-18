@@ -53,6 +53,13 @@ export interface ExtractResult {
    * inlined. The generated file has to `import type` them from there.
    */
   importedFrom?: string;
+  /**
+   * The schema's name as declared in `importedFrom`, when it differs from
+   * `schemaName` (an aliased named import, e.g. `import { X as Y }`). The
+   * declaring file names its generated types after this one, not after the
+   * local alias, so the `import type` has to bridge the two with `as`.
+   */
+  originalName?: string;
   /** Schema-level description from `v.description()` */
   description?: string;
   /** Field descriptions from `v.description()` */

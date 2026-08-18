@@ -295,6 +295,43 @@ describe("runCLI", () => {
       expect(generated).toContain("export type CrossFileNodeInput = CrossFileNode;");
       expect(generated).toContain("root: CrossFileNode;");
     });
+
+    it("bridges an aliased import to the name the declaring file actually exports", async () => {
+      const source = join(fixturesDir, "cross-file-recursive");
+      mkdirSync(join(workDir, "schemas/node"), { recursive: true });
+      mkdirSync(join(workDir, "schemas/tree"), { recursive: true });
+      cpSync(join(source, "node-schema.ts"), join(workDir, "schemas/node/schema.ts"));
+      writeFileSync(
+        join(workDir, "schemas/tree/schema.ts"),
+        [
+          'import * as v from "valibot";',
+          'import { CrossFileNodeSchema as AliasedNode } from "../node/schema";',
+          "",
+          "export const CrossFileTreeSchema = v.object({",
+          "  root: AliasedNode,",
+          "});",
+        ].join("\n"),
+      );
+
+      await run(["schemas/**/schema.ts"], {
+        outDir: "types",
+        outPattern: "[dir].generated[ext]",
+        suffix: "Schema",
+        outputSuffix: "",
+        mergeSame: true,
+      });
+
+      const node = readFileSync(join(workDir, "types/node.generated.ts"), "utf-8");
+      const tree = readFileSync(join(workDir, "types/tree.generated.ts"), "utf-8");
+      // The declaring file exports "CrossFileNode" (its own name), not the
+      // "AliasedNode" the importing file uses locally - the import has to
+      // bridge the two, or the alias name would not exist in that module.
+      expect(node).toContain("export type CrossFileNode = {");
+      expect(tree).toContain(
+        'import type { CrossFileNode as AliasedNode } from "./node.generated";',
+      );
+      expect(tree).toContain("root: AliasedNode;");
+    });
   });
 
   it("rewrites an annotation's import() specifier to reach from the output file", async () => {

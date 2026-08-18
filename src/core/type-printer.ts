@@ -651,6 +651,11 @@ export function generateDeclarationFile(
  * Which of a schema's names are needed depends on how the declarations came out
  * - `mergeSame` collapses a reference to the unified name - so the names are
  * read back out of the rendered declarations rather than predicted.
+ *
+ * A schema imported under an alias (`import { X as Y }`) is spelled as `Y`
+ * throughout this file's own declarations, but the declaring file names its
+ * generated types after `X`, not `Y` - so the two are bridged with `as` where
+ * they differ.
  */
 function crossFileImportLines(
   results: ExtractResult[],
@@ -663,7 +668,7 @@ function crossFileImportLines(
     return [];
   }
 
-  const namesByModule = new Map<string, Set<string>>();
+  const namesByModule = new Map<string, Map<string, string>>();
 
   for (const result of results) {
     if (!result.importedFrom) continue;
@@ -671,25 +676,36 @@ function crossFileImportLines(
     const moduleSpecifier = importSources.get(result.schemaName);
     if (!moduleSpecifier) continue;
 
-    const mapped = mapName(result.schemaName);
-    for (const typeName of new Set([mapped.unifiedName, mapped.inputName, mapped.outputName])) {
-      if (!new RegExp(`\\b${escapeRegExp(typeName)}\\b`).test(declarations)) continue;
+    const localMapped = mapName(result.schemaName);
+    const targetMapped = mapName(result.originalName ?? result.schemaName);
+    const namePairs: [local: string, target: string][] = [
+      [localMapped.unifiedName, targetMapped.unifiedName],
+      [localMapped.inputName, targetMapped.inputName],
+      [localMapped.outputName, targetMapped.outputName],
+    ];
 
-      let names = namesByModule.get(moduleSpecifier);
-      if (!names) {
-        names = new Set<string>();
-        namesByModule.set(moduleSpecifier, names);
-      }
-      names.add(typeName);
+    let names = namesByModule.get(moduleSpecifier);
+    if (!names) {
+      names = new Map<string, string>();
+      namesByModule.set(moduleSpecifier, names);
+    }
+
+    for (const [localName, targetName] of namePairs) {
+      if (!new RegExp(`\\b${escapeRegExp(localName)}\\b`).test(declarations)) continue;
+      names.set(localName, targetName);
     }
   }
 
   return [...namesByModule]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(
-      ([moduleSpecifier, names]) =>
-        `import type { ${[...names].sort().join(", ")} } from "${moduleSpecifier}";`,
-    );
+    .map(([moduleSpecifier, names]) => {
+      const specifiers = [...names]
+        .map(([localName, targetName]) =>
+          targetName === localName ? targetName : `${targetName} as ${localName}`,
+        )
+        .sort();
+      return `import type { ${specifiers.join(", ")} } from "${moduleSpecifier}";`;
+    });
 }
 
 /**
