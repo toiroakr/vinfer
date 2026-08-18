@@ -22,7 +22,9 @@ Fix recursive schema generation.
   approximation that lost its recursion point. When nothing declares a name for
   a recursive schema - neither this file nor another generated one - the
   recursion point keeps the index signature or array the getter describes rather
-  than collapsing to a bare `any`.
+  than collapsing to a bare `any`. An aliased import (`import { X as Y }`) is
+  bridged with `as` so the generated `import type` names the schema's actual
+  export rather than the local alias, which the declaring file never uses.
 - `mergeSame` now merges recursive schemas: the two directions of a schema that
   names itself are compared with those self-references unified, so a recursive
   schema whose input and output agree emits a single type plus `type XInput = X`.
