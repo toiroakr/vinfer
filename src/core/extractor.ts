@@ -45,6 +45,19 @@ interface RawSchemaType {
 }
 
 /**
+ * Checks whether the character at `index` is escaped by a preceding
+ * backslash - one that itself is not escaped, so `\\"` (an escaped
+ * backslash followed by an unescaped quote) does not count.
+ */
+function isEscaped(str: string, index: number): boolean {
+  let backslashes = 0;
+  for (let i = index - 1; i >= 0 && str[i] === "\\"; i--) {
+    backslashes++;
+  }
+  return backslashes % 2 === 1;
+}
+
+/**
  * Collapses a `| undefined` TypeScript's printer spelled more than once.
  *
  * A homomorphic mapped type - which is what `__Normalize` is - copies an
@@ -77,7 +90,7 @@ function collapseRepeatedUndefined(typeStr: string): string {
 
   for (let index = 0; index < typeStr.length; index++) {
     const char = typeStr[index];
-    if ((char !== '"' && char !== "'" && char !== "`") || typeStr[index - 1] === "\\") {
+    if ((char !== '"' && char !== "'" && char !== "`") || isEscaped(typeStr, index)) {
       continue;
     }
 
@@ -105,6 +118,11 @@ function collapseRepeatedUndefined(typeStr: string): string {
  * `relativizeImportPaths` already knows how to re-anchor onto the output
  * directory, and it survives results from several source files being merged
  * into one output file.
+ *
+ * Unlike `collapseRepeatedUndefined`, this cannot reuse
+ * `transformOutsideStringLiterals`: the `"..."` an `import()` type names is
+ * itself a quoted string, so a literal-boundary scan that treats every quote
+ * the same way would skip the very syntax this function exists to rewrite.
  */
 function absolutizeImportPaths(typeStr: string, sourceDir: string): string {
   if (!typeStr.includes('import("')) {

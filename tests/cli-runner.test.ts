@@ -250,7 +250,7 @@ describe("runCLI", () => {
           "};",
         ].join("\n"),
       );
-      expect(tree).not.toContain("any");
+      expect(tree).not.toMatch(/\bany\b/);
     });
 
     it("declares both directions when a recursive schema's input and output differ", async () => {

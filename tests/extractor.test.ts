@@ -597,9 +597,8 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     it("keeps v.description() on every inlined level", async () => {
       const output = await generateWithDescriptions();
 
-      // Once per direction, at each level it occurs on: the schema's own field,
-      // the copy behind the non-generated intermediate, and the copy behind the
-      // one nested inside that.
+      // `viaDepartment.group` is the only field this description sits on, so it
+      // appears once per direction.
       expect(output.match(/\/\*\* The group \*\//g)).toHaveLength(2);
       // Depth 0 and the level below the index signature, in both directions.
       expect(output.match(/\/\*\* The local label \*\//g)).toHaveLength(4);
