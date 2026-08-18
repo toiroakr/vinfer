@@ -1,4 +1,5 @@
 import { Project, SourceFile, TypeFormatFlags, ts } from "ts-morph";
+import { resolve as resolvePath } from "pathe";
 import {
   NORMALIZE_TYPE_DEFINITION,
   NORMALIZE_TYPE_NAMES,
@@ -16,6 +17,135 @@ import type { ExtractResult, FileExtractResult, DetectedSchema } from "./types.j
 export type { ExtractResult } from "./types.js";
 
 /**
+ * A schema's printed input/output types, before cross-schema references are
+ * resolved into type names.
+ */
+interface RawSchemaType {
+  input: string;
+  output: string;
+  isExported: boolean;
+  /** Set when the schema is declared in another file that generates types of its own. */
+  importedFrom?: string;
+  /**
+   * The schema's name as declared in `importedFrom`, when it differs from the
+   * local name it is cached/keyed under (an aliased named import). The
+   * declaring file names its generated types after this one, not after the
+   * local alias.
+   */
+  originalName?: string;
+  /**
+   * The form to inline this schema as when its own name cannot be used.
+   *
+   * Only recursive schemas that no file declares types for need one: their
+   * printed type names themselves, which is meaningless in a file that never
+   * declares that name, so the recursion point is widened to the shape the
+   * getter describes instead.
+   */
+  approximation?: { input: string; output: string };
+}
+
+/**
+ * Checks whether the character at `index` is escaped by a preceding
+ * backslash - one that itself is not escaped, so `\\"` (an escaped
+ * backslash followed by an unescaped quote) does not count.
+ */
+function isEscaped(str: string, index: number): boolean {
+  let backslashes = 0;
+  for (let i = index - 1; i >= 0 && str[i] === "\\"; i--) {
+    backslashes++;
+  }
+  return backslashes % 2 === 1;
+}
+
+/**
+ * Collapses a `| undefined` TypeScript's printer spelled more than once.
+ *
+ * A homomorphic mapped type - which is what `__Normalize` is - copies an
+ * optional property by its indexed access, so a property declared
+ * `required?: boolean | undefined` prints as its declared type *and* gets the
+ * `| undefined` the printer appends for an optional key under
+ * `strictNullChecks`, yielding `required?: boolean | undefined | undefined`.
+ * No type can hold that union twice, so dropping the repeat loses nothing.
+ *
+ * String literal types are skipped: `"a | undefined | undefined"` is text, not a
+ * union.
+ */
+function collapseRepeatedUndefined(typeStr: string): string {
+  if (!typeStr.includes("undefined")) {
+    return typeStr;
+  }
+
+  let result = "";
+  let segmentStart = 0;
+  let inString = false;
+  let stringChar = "";
+
+  const flush = (end: number) => {
+    const segment = typeStr.slice(segmentStart, end);
+    result += inString
+      ? segment
+      : segment.replace(/(\|\s*undefined\b)(\s*\|\s*undefined\b)+/g, "$1");
+    segmentStart = end;
+  };
+
+  for (let index = 0; index < typeStr.length; index++) {
+    const char = typeStr[index];
+    if ((char !== '"' && char !== "'" && char !== "`") || isEscaped(typeStr, index)) {
+      continue;
+    }
+
+    if (!inString) {
+      flush(index);
+      inString = true;
+      stringChar = char;
+    } else if (char === stringChar) {
+      flush(index + 1);
+      inString = false;
+      stringChar = "";
+    }
+  }
+
+  flush(typeStr.length);
+  return result;
+}
+
+/**
+ * Rewrites the relative specifiers in printed `import("...")` types to absolute
+ * paths.
+ *
+ * TypeScript prints such a specifier relative to the file the type was read
+ * from, which is not where the generated file ends up. Absolute is the form
+ * `relativizeImportPaths` already knows how to re-anchor onto the output
+ * directory, and it survives results from several source files being merged
+ * into one output file.
+ *
+ * Unlike `collapseRepeatedUndefined`, this cannot reuse
+ * `transformOutsideStringLiterals`: the `"..."` an `import()` type names is
+ * itself a quoted string, so a literal-boundary scan that treats every quote
+ * the same way would skip the very syntax this function exists to rewrite.
+ */
+function absolutizeImportPaths(typeStr: string, sourceDir: string): string {
+  if (!typeStr.includes('import("')) {
+    return typeStr;
+  }
+
+  return typeStr.replace(/import\("([^"]+)"\)/g, (match, importPath: string) => {
+    if (!importPath.startsWith(".")) {
+      return match;
+    }
+    return `import("${resolvePath(sourceDir, importPath)}")`;
+  });
+}
+
+/**
+ * Falls back to a schema's printed input when TypeScript gave up on its
+ * output, printing it as a bare `any`.
+ */
+function withOutputFallback(printedOutput: string, printedInput: string): string {
+  return printedOutput === "any" ? printedInput : printedOutput;
+}
+
+/**
  * Options for type extraction.
  */
 export interface ExtractOptions {
@@ -28,6 +158,21 @@ export interface ExtractOptions {
 }
 
 /**
+ * Extra context that lets extraction reach beyond the file being processed.
+ */
+export interface ExtractContext {
+  /**
+   * Absolute paths of the files that get generated types of their own.
+   *
+   * A recursive schema imported from one of them is referenced by name rather
+   * than inlined - an inline copy of a recursive type can only ever be an
+   * approximation - leaving the caller to `import type` it. Schemas from files
+   * outside this set are inlined as before.
+   */
+  importableFiles?: ReadonlySet<string>;
+}
+
+/**
  * Extracts input and output types from Valibot schemas using TypeScript Compiler API.
  */
 export class ValibotTypeExtractor {
@@ -36,7 +181,7 @@ export class ValibotTypeExtractor {
   private getterResolver: GetterResolver;
   private referenceAnalyzer: SchemaReferenceAnalyzer;
   private importResolver: ImportResolver;
-  private importedSchemaCache = new Map<string, { input: string; output: string }>();
+  private importedSchemaCache = new Map<string, Omit<RawSchemaType, "isExported">>();
 
   /**
    * Creates a new ValibotTypeExtractor instance.
@@ -77,11 +222,11 @@ export class ValibotTypeExtractor {
    * @param filePath - Path to the TypeScript file
    * @returns Array of extraction results for each schema
    */
-  extractAll(filePath: string): ExtractResult[] {
+  extractAll(filePath: string, context: ExtractContext = {}): ExtractResult[] {
     const sourceFile = this.getOrAddSourceFile(filePath);
     const schemas = this.schemaDetector.detectExportedSchemas(sourceFile);
 
-    return this.extractMultipleFromSourceFile(sourceFile, schemas);
+    return this.extractMultipleFromSourceFile(sourceFile, schemas, context);
   }
 
   /**
@@ -91,7 +236,11 @@ export class ValibotTypeExtractor {
    * @param schemaNames - Names of schemas to extract
    * @returns Array of extraction results
    */
-  extractMultiple(filePath: string, schemaNames: string[]): ExtractResult[] {
+  extractMultiple(
+    filePath: string,
+    schemaNames: string[],
+    context: ExtractContext = {},
+  ): ExtractResult[] {
     const sourceFile = this.getOrAddSourceFile(filePath);
     const allSchemas = this.schemaDetector.detectExportedSchemas(sourceFile);
     const schemas = schemaNames.map((name) => {
@@ -99,7 +248,7 @@ export class ValibotTypeExtractor {
       return found || { name, isExported: true, line: 0 };
     });
 
-    return this.extractMultipleFromSourceFile(sourceFile, schemas);
+    return this.extractMultipleFromSourceFile(sourceFile, schemas, context);
   }
 
   /**
@@ -108,10 +257,10 @@ export class ValibotTypeExtractor {
    * @param filePath - Path to the TypeScript file
    * @returns File extraction result with all schemas
    */
-  extractFile(filePath: string): FileExtractResult {
+  extractFile(filePath: string, context: ExtractContext = {}): FileExtractResult {
     return {
       filePath,
-      schemas: this.extractAll(filePath),
+      schemas: this.extractAll(filePath, context),
     };
   }
 
@@ -138,6 +287,7 @@ export class ValibotTypeExtractor {
   private extractMultipleFromSourceFile(
     sourceFile: SourceFile,
     schemas: DetectedSchema[],
+    context: ExtractContext = {},
   ): ExtractResult[] {
     const results: ExtractResult[] = [];
 
@@ -158,7 +308,7 @@ export class ValibotTypeExtractor {
       this.referenceAnalyzer.analyzeAllReferences(sourceFile, schemaNames);
 
     // First pass: extract raw types for all schemas
-    const rawTypes = new Map<string, { input: string; output: string; isExported: boolean }>();
+    const rawTypes = new Map<string, RawSchemaType>();
 
     // Inject __Normalize once for the main source file
     this.ensureNormalizeType(sourceFile);
@@ -167,15 +317,14 @@ export class ValibotTypeExtractor {
     for (const [localName, importInfo] of importedSchemas) {
       if (!importInfo.resolved) continue;
 
-      // Check cache for previously extracted imported schemas
-      const cacheKey = `${importInfo.sourceFilePath}:${importInfo.originalName}`;
+      const isImportable = context.importableFiles?.has(importInfo.sourceFilePath) ?? false;
+      // The self-references a recursive schema needs are spelled with the local
+      // name, and what they point at depends on whether the declaring file is
+      // generated, so both belong in the cache key alongside the declaration.
+      const cacheKey = `${importInfo.sourceFilePath}:${importInfo.originalName}:${localName}:${isImportable}`;
       const cached = this.importedSchemaCache.get(cacheKey);
       if (cached) {
-        rawTypes.set(localName, {
-          input: cached.input,
-          output: cached.output,
-          isExported: false,
-        });
+        rawTypes.set(localName, { ...cached, isExported: false });
         continue;
       }
 
@@ -185,18 +334,18 @@ export class ValibotTypeExtractor {
       this.ensureNormalizeType(importedSourceFile);
       try {
         this.injectTemporaryTypes(importedSourceFile, importInfo.originalName);
-        const inputType = this.resolveType(importedSourceFile, "__TempInput");
-        const outputType = this.resolveType(importedSourceFile, "__TempOutput");
+        const raw = this.resolveImportedSchemaType(
+          importedSourceFile,
+          importInfo.originalName,
+          localName,
+          isImportable,
+        );
 
         // Cache the result
-        this.importedSchemaCache.set(cacheKey, { input: inputType, output: outputType });
+        this.importedSchemaCache.set(cacheKey, raw);
 
         // Use local name as the key (how it's referenced in current file)
-        rawTypes.set(localName, {
-          input: inputType,
-          output: outputType,
-          isExported: false, // Imported schemas won't be re-exported
-        });
+        rawTypes.set(localName, { ...raw, isExported: false });
       } catch (error) {
         logDebugError(`Failed to extract imported schema "${localName}"`, error);
       } finally {
@@ -226,34 +375,38 @@ export class ValibotTypeExtractor {
 
       this.injectTemporaryTypes(sourceFile, localName ?? schemaName);
       try {
-        let inputType = this.resolveType(sourceFile, "__TempInput");
-        let outputType = this.resolveType(sourceFile, "__TempOutput");
+        const rawInput = this.resolveType(sourceFile, "__TempInput");
+        const printedOutput = this.resolveType(sourceFile, "__TempOutput");
+        const rawOutput = withOutputFallback(printedOutput, rawInput);
+
+        let input = rawInput;
+        let output = rawOutput;
+        let approximation: RawSchemaType["approximation"];
 
         // Resolve getter-based self-references
         const getterFields = getterFieldMap.get(schemaName);
         if (getterFields && this.getterResolver.hasSelfReferences(getterFields)) {
-          const inputTypeName = `${schemaName}Input`;
-          const outputTypeName = `${schemaName}Output`;
-          const originalInputType = inputType;
+          input = this.getterResolver.resolveAnyTypes(rawInput, getterFields, `${schemaName}Input`);
+          output = this.getterResolver.resolveAnyTypes(
+            rawOutput,
+            getterFields,
+            `${schemaName}Output`,
+          );
 
-          inputType = this.getterResolver.resolveAnyTypes(inputType, getterFields, inputTypeName);
-
-          if (outputType === "any") {
-            outputType = this.getterResolver.resolveAnyTypes(
-              originalInputType,
-              getterFields,
-              outputTypeName,
-            );
-          } else {
-            outputType = this.getterResolver.resolveAnyTypes(
-              outputType,
-              getterFields,
-              outputTypeName,
-            );
+          if (!isExported) {
+            // Nothing will declare this schema's types, so a reference to it has
+            // to be inlined - and an inlined recursive type can only ever be an
+            // approximation. Keep one whose recursion point is the index
+            // signature or array the getter describes, rather than a bare `any`.
+            const options = { collapseInlinedCopies: false };
+            approximation = {
+              input: this.getterResolver.resolveAnyTypes(rawInput, getterFields, "any", options),
+              output: this.getterResolver.resolveAnyTypes(rawOutput, getterFields, "any", options),
+            };
           }
         }
 
-        rawTypes.set(schemaName, { input: inputType, output: outputType, isExported });
+        rawTypes.set(schemaName, { input, output, isExported, approximation });
       } finally {
         this.cleanupTemporaryTypes(sourceFile);
       }
@@ -333,10 +486,40 @@ export class ValibotTypeExtractor {
       const refs = referenceMap.get(schemaName) || [];
       for (const ref of refs) {
         const refRaw = rawTypes.get(ref.refSchema);
-        if (!refRaw?.isExported) continue;
+        if (!refRaw) continue;
 
-        input = this.replaceSchemaReference(input, ref, refRaw.input, `${ref.refSchema}Input`);
-        output = this.replaceSchemaReference(output, ref, refRaw.output, `${ref.refSchema}Output`);
+        // A schema is referenced by name when this file declares its types, or
+        // when another generated file does and they can be imported from there.
+        if (refRaw.isExported || refRaw.importedFrom) {
+          input = this.replaceSchemaReference(input, ref, refRaw.input, `${ref.refSchema}Input`);
+          output = this.replaceSchemaReference(
+            output,
+            ref,
+            refRaw.output,
+            `${ref.refSchema}Output`,
+          );
+          continue;
+        }
+
+        // Nothing declares this schema's types, so it stays inlined - but from
+        // its own resolved form rather than from what TypeScript printed here,
+        // so the references it makes to schemas that *are* declared survive
+        // being nested inside it.
+        const resolvedRef = resolveSchemaTypes(ref.refSchema);
+        const inlineInput = this.inlinableForm(resolvedRef?.input, refRaw, ref.refSchema, "Input");
+        const inlineOutput = this.inlinableForm(
+          resolvedRef?.output,
+          refRaw,
+          ref.refSchema,
+          "Output",
+        );
+
+        if (inlineInput !== undefined) {
+          input = this.replaceSchemaReference(input, ref, refRaw.input, inlineInput);
+        }
+        if (inlineOutput !== undefined) {
+          output = this.replaceSchemaReference(output, ref, refRaw.output, inlineOutput);
+        }
       }
 
       const explicitType = schemasByName.get(schemaName)?.explicitType;
@@ -363,6 +546,9 @@ export class ValibotTypeExtractor {
         input: raw.input,
         output: raw.output,
         isExported: false, // Imported schemas are not re-exported
+        ...(raw.importedFrom
+          ? { importedFrom: raw.importedFrom, originalName: raw.originalName }
+          : {}),
       });
     }
 
@@ -384,6 +570,43 @@ export class ValibotTypeExtractor {
     }
 
     return results;
+  }
+
+  /**
+   * Picks the form a schema whose types nothing declares is inlined as.
+   *
+   * @returns The type to inline, or undefined to leave the reference as
+   *   TypeScript printed it
+   */
+  private inlinableForm(
+    resolved: string | undefined,
+    raw: RawSchemaType,
+    refSchema: string,
+    kind: "Input" | "Output",
+  ): string | undefined {
+    const printed = kind === "Input" ? raw.input : raw.output;
+    const approximation = kind === "Input" ? raw.approximation?.input : raw.approximation?.output;
+    const candidate = resolved ?? printed;
+
+    // A recursive schema names itself, and nothing declares that name here, so
+    // only the approximation can be inlined.
+    if (new RegExp(`\\b${this.escapeRegExp(`${refSchema}${kind}`)}\\b`).test(candidate)) {
+      return approximation;
+    }
+
+    // The schema's own printed form is already an approximation - it is a
+    // recursive one from a file that gets no generated types - and says more
+    // than what TypeScript printed here, which lost the recursion entirely.
+    if (approximation !== undefined) {
+      return approximation;
+    }
+
+    // Otherwise only a form that resolving actually changed is worth inlining:
+    // it carries names TypeScript could not have printed. When resolving
+    // changed nothing, what TypeScript expanded at the reference site is the
+    // more faithful of the two - an explicit `v.GenericSchema<T>` annotation is
+    // printed as written, down to the `import()` types it names.
+    return candidate !== printed ? candidate : undefined;
   }
 
   /**
@@ -592,9 +815,66 @@ export class ValibotTypeExtractor {
       }
     }
 
+    rawType = collapseRepeatedUndefined(rawType);
+    rawType = absolutizeImportPaths(rawType, sourceFile.getDirectoryPath());
+
     // Reduce Valibot type references (Brand/Flavor) to their bare names so the
     // generated file can import them from "valibot" directly.
     return ValibotBindings.from(sourceFile).canonicalizeTypeNames(rawType);
+  }
+
+  /**
+   * Resolves an imported schema's printed types, including its own recursion.
+   *
+   * The getters of an imported schema live in the file that declares it, so its
+   * recursion has to be resolved against that file. What the recursion points at
+   * depends on whether the declaring file gets generated types of its own: if it
+   * does, the self-reference is the type name the importing file will `import
+   * type`; if it does not, there is no name to point at, and the recursion is
+   * left as an `any` - widened to the index signature / array the getter
+   * describes, so property access stays type-checked - with the inline copy
+   * around it kept for whatever detail it still carries.
+   */
+  private resolveImportedSchemaType(
+    importedSourceFile: SourceFile,
+    originalName: string,
+    localName: string,
+    isImportable: boolean,
+  ): Omit<RawSchemaType, "isExported"> {
+    const inputType = this.resolveType(importedSourceFile, "__TempInput");
+    const rawOutputType = this.resolveType(importedSourceFile, "__TempOutput");
+    const outputType = withOutputFallback(rawOutputType, inputType);
+
+    const getterFields = this.getterResolver
+      .analyzeGetterFields(importedSourceFile, new Set([originalName]))
+      .get(originalName);
+
+    if (!getterFields || !this.getterResolver.hasSelfReferences(getterFields)) {
+      return { input: inputType, output: outputType };
+    }
+
+    const resolveOptions = { collapseInlinedCopies: isImportable };
+    const resolved = {
+      input: this.getterResolver.resolveAnyTypes(
+        inputType,
+        getterFields,
+        isImportable ? `${localName}Input` : "any",
+        resolveOptions,
+      ),
+      output: this.getterResolver.resolveAnyTypes(
+        outputType,
+        getterFields,
+        isImportable ? `${localName}Output` : "any",
+        resolveOptions,
+      ),
+    };
+
+    if (isImportable) {
+      return { ...resolved, importedFrom: importedSourceFile.getFilePath(), originalName };
+    }
+    // No file will declare a name for this one, so what it printed is itself
+    // the approximation a reference has to be inlined as.
+    return { ...resolved, approximation: resolved };
   }
 
   /**

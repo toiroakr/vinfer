@@ -187,6 +187,176 @@ describe("runCLI", () => {
     expect(testFile).toContain('describe("transform-schema", () => {');
   });
 
+  describe("recursive schemas across output files", () => {
+    /**
+     * Copies the cross-file recursive fixtures into the work directory, each in
+     * its own subdirectory so the generated names come from `[dir]`.
+     */
+    function copyCrossFileFixtures() {
+      const source = join(fixturesDir, "cross-file-recursive");
+      mkdirSync(join(workDir, "schemas/node"), { recursive: true });
+      mkdirSync(join(workDir, "schemas/tree"), { recursive: true });
+      cpSync(join(source, "node-schema.ts"), join(workDir, "schemas/node/schema.ts"));
+      writeFileSync(
+        join(workDir, "schemas/tree/schema.ts"),
+        readFileSync(join(source, "tree-schema.ts"), "utf-8").replace(
+          './node-schema"',
+          '../node/schema"',
+        ),
+      );
+    }
+
+    it("imports a recursive schema from the file that generates it", async () => {
+      copyCrossFileFixtures();
+      await run(["schemas/**/schema.ts"], {
+        outDir: "types",
+        outPattern: "[dir].generated[ext]",
+        suffix: "Schema",
+        outputSuffix: "",
+        mergeSame: true,
+        withDescriptions: true,
+      });
+
+      const node = readFileSync(join(workDir, "types/node.generated.ts"), "utf-8");
+      // The recursion points straight at the type, with no inlined copy in
+      // between - and every level keeps its description.
+      expect(node).toContain(
+        [
+          "export type CrossFileNode = {",
+          "  /** The node name */",
+          "  name: string;",
+          "  children: {",
+          "    [x: string]: CrossFileNode;",
+          "  };",
+          "};",
+        ].join("\n"),
+      );
+      expect(node).toContain("export type CrossFileNodeInput = CrossFileNode;");
+
+      const tree = readFileSync(join(workDir, "types/tree.generated.ts"), "utf-8");
+      expect(tree).toContain('import type { CrossFileNode } from "./node.generated";');
+      expect(tree).toContain(
+        [
+          "export type CrossFileTree = {",
+          "  /** Root node */",
+          "  root: CrossFileNode;",
+          "  index: {",
+          "    [x: string]: CrossFileNode;",
+          "  };",
+          "  /** Through a non-generated schema */",
+          "  group: {",
+          "    members: CrossFileNode[];",
+          "  };",
+          "};",
+        ].join("\n"),
+      );
+      expect(tree).not.toMatch(/\bany\b/);
+    });
+
+    it("declares both directions when a recursive schema's input and output differ", async () => {
+      copyCrossFileFixtures();
+      await run(["schemas/**/schema.ts"], {
+        outDir: "types",
+        outPattern: "[dir].generated[ext]",
+        suffix: "Schema",
+      });
+
+      const tree = readFileSync(join(workDir, "types/tree.generated.ts"), "utf-8");
+      expect(tree).toContain(
+        'import type { CrossFileNodeInput, CrossFileNodeOutput } from "./node.generated";',
+      );
+      expect(tree).toContain("root: CrossFileNodeInput;");
+      expect(tree).toContain("root: CrossFileNodeOutput;");
+    });
+
+    it("keeps a single output file self-contained, with no import to itself", async () => {
+      copyCrossFileFixtures();
+      await run(["schemas/**/schema.ts"], { outFile: "types/all.ts", suffix: "Schema" });
+
+      const generated = readFileSync(join(workDir, "types/all.ts"), "utf-8");
+      expect(generated).not.toContain("import type {");
+      expect(generated).toContain("export type CrossFileNodeInput = {");
+      expect(generated).toContain("root: CrossFileNodeInput;");
+    });
+
+    it("still declares a schema another file imports when mergeSame collapses it", async () => {
+      copyCrossFileFixtures();
+      await run(["schemas/**/schema.ts"], {
+        outFile: "types/all.ts",
+        suffix: "Schema",
+        outputSuffix: "",
+        mergeSame: true,
+      });
+
+      const generated = readFileSync(join(workDir, "types/all.ts"), "utf-8");
+      // The schema appears twice in the results - once declared here, once as
+      // the copy the importing file carries - and the declaration must survive.
+      expect(generated).toContain("export type CrossFileNode = {");
+      expect(generated).toContain("export type CrossFileNodeInput = CrossFileNode;");
+      expect(generated).toContain("root: CrossFileNode;");
+    });
+
+    it("bridges an aliased import to the name the declaring file actually exports", async () => {
+      const source = join(fixturesDir, "cross-file-recursive");
+      mkdirSync(join(workDir, "schemas/node"), { recursive: true });
+      mkdirSync(join(workDir, "schemas/tree"), { recursive: true });
+      cpSync(join(source, "node-schema.ts"), join(workDir, "schemas/node/schema.ts"));
+      writeFileSync(
+        join(workDir, "schemas/tree/schema.ts"),
+        [
+          'import * as v from "valibot";',
+          'import { CrossFileNodeSchema as AliasedNode } from "../node/schema";',
+          "",
+          "export const CrossFileTreeSchema = v.object({",
+          "  root: AliasedNode,",
+          "});",
+        ].join("\n"),
+      );
+
+      await run(["schemas/**/schema.ts"], {
+        outDir: "types",
+        outPattern: "[dir].generated[ext]",
+        suffix: "Schema",
+        outputSuffix: "",
+        mergeSame: true,
+      });
+
+      const node = readFileSync(join(workDir, "types/node.generated.ts"), "utf-8");
+      const tree = readFileSync(join(workDir, "types/tree.generated.ts"), "utf-8");
+      // The declaring file exports "CrossFileNode" (its own name), not the
+      // "AliasedNode" the importing file uses locally - the import has to
+      // bridge the two, or the alias name would not exist in that module.
+      expect(node).toContain("export type CrossFileNode = {");
+      expect(tree).toContain(
+        'import type { CrossFileNode as AliasedNode } from "./node.generated";',
+      );
+      expect(tree).toContain("root: AliasedNode;");
+    });
+  });
+
+  it("rewrites an annotation's import() specifier to reach from the output file", async () => {
+    cpSync(
+      join(fixturesDir, "annotated-inline-types.ts"),
+      join(workDir, "schemas/annotated-inline-types.ts"),
+    );
+    cpSync(
+      join(fixturesDir, "annotated-inline-schema.ts"),
+      join(workDir, "schemas/annotated-inline-schema.ts"),
+    );
+
+    await run(["schemas/annotated-inline-schema.ts"], { outDir: "types", suffix: "Schema" });
+
+    const generated = readFileSync(
+      join(workDir, "types/annotated-inline-schema.types.ts"),
+      "utf-8",
+    );
+    // Written as "./annotated-inline-types" in the schema file, which resolves
+    // to nothing from types/.
+    expect(generated).toContain('import("../schemas/annotated-inline-types").AnnotatedMeta');
+    expect(generated).not.toContain('import("./annotated-inline-types")');
+    expect(generated).not.toMatch(/(?:boolean|string) \| undefined \| undefined/);
+  });
+
   it("reads options from vinfer.config.mjs", async () => {
     writeFileSync(
       join(workDir, "vinfer.config.mjs"),

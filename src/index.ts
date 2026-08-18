@@ -2,6 +2,7 @@
 export {
   ValibotTypeExtractor,
   type ExtractOptions,
+  type ExtractContext,
   formatResult,
   formatInputOnly,
   formatOutputOnly,

@@ -192,6 +192,113 @@ describe("GetterResolver", () => {
       expect(result).toBe("{ next?: Node; } | { next?: Node; }");
     });
 
+    it("should collapse an inlined copy of the schema into the self-reference", () => {
+      // An annotated getter lets TypeScript unfold one whole copy of the schema
+      // before it reaches the recursion, and that copy says nothing the
+      // self-reference does not.
+      const getterFields = new Map([
+        [
+          "children",
+          {
+            refSchema: "Node",
+            isArray: false,
+            isRecord: true,
+            isOptional: false,
+            isSelfRef: true,
+          },
+        ],
+      ]);
+
+      const typeStr =
+        "{ name: string; children: { [x: string]: { name: string; children: { [x: string]: any; }; }; }; }";
+      const result = resolver.resolveAnyTypes(typeStr, getterFields, "Node");
+
+      expect(result).toBe("{ name: string; children: { [x: string]: Node; }; }");
+    });
+
+    it("should collapse an inlined copy behind an optional key", () => {
+      const getterFields = new Map([
+        [
+          "children",
+          {
+            refSchema: "Node",
+            isArray: false,
+            isRecord: true,
+            isOptional: true,
+            isSelfRef: true,
+          },
+        ],
+      ]);
+
+      const typeStr =
+        "{ name: string; children?: { [x: string]: { name: string; children?: any | undefined; }; } | undefined; }";
+      const result = resolver.resolveAnyTypes(typeStr, getterFields, "Node");
+
+      expect(result).toBe("{ name: string; children?: { [x: string]: Node; }; }");
+    });
+
+    it("should collapse an inlined copy that bottoms out in a different self-ref field", () => {
+      // The unfolded copy of "children" contains no nested "children" any
+      // placeholder of its own here - only a "next" one - so recognising it
+      // as a copy depends on checking every self-ref field, not just the one
+      // currently being resolved.
+      const getterFields = new Map([
+        [
+          "children",
+          {
+            refSchema: "Node",
+            isArray: false,
+            isRecord: true,
+            isOptional: false,
+            isSelfRef: true,
+          },
+        ],
+        [
+          "next",
+          {
+            refSchema: "Node",
+            isArray: false,
+            isRecord: false,
+            isOptional: false,
+            isSelfRef: true,
+          },
+        ],
+      ]);
+
+      const typeStr =
+        "{ name: string; children: { [x: string]: { name: string; next: any; }; }; next: any; }";
+      const result = resolver.resolveAnyTypes(typeStr, getterFields, "Node");
+
+      expect(result).toBe("{ name: string; children: { [x: string]: Node; }; next: Node; }");
+    });
+
+    it("should keep the inlined copy when told not to collapse it", () => {
+      // Without a name to point at, the copy is the most that can be said - only
+      // its innermost placeholder is widened to the shape the getter describes.
+      const getterFields = new Map([
+        [
+          "children",
+          {
+            refSchema: "Node",
+            isArray: false,
+            isRecord: true,
+            isOptional: false,
+            isSelfRef: true,
+          },
+        ],
+      ]);
+
+      const typeStr =
+        "{ name: string; children: { [x: string]: { name: string; children: any; }; }; }";
+      const result = resolver.resolveAnyTypes(typeStr, getterFields, "any", {
+        collapseInlinedCopies: false,
+      });
+
+      expect(result).toBe(
+        "{ name: string; children: { [x: string]: { name: string; children: { [x: string]: any; }; }; }; }",
+      );
+    });
+
     it("should not modify types without self-references", () => {
       const getterFields = new Map([
         [

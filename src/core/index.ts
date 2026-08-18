@@ -1,6 +1,6 @@
 export { NORMALIZE_TYPE_DEFINITION, createTempTypeAlias } from "./normalizer.js";
 
-export { ValibotTypeExtractor, type ExtractOptions } from "./extractor.js";
+export { ValibotTypeExtractor, type ExtractOptions, type ExtractContext } from "./extractor.js";
 
 export {
   formatResult,
