@@ -208,4 +208,49 @@ describe("generateDeclarationFile", () => {
     expect(output).toContain("address: Address;");
     expect(output).toContain("export type User = {");
   });
+
+  it("rewrites cross-schema references for a $-prefixed schema name", () => {
+    // `\b` treats `$` as a non-word character, so `\b$NodeSchemaInput\b` never
+    // matches - the replacement (and the check that the old name is gone) both
+    // depend on identifier-aware boundary matching, not `\b`.
+    const output = generateDeclarationFile(
+      [
+        result({
+          schemaName: "$NodeSchema",
+          input: "{ label: string; }",
+          output: "{ label: string; }",
+        }),
+        result({
+          schemaName: "TreeSchema",
+          input: "{ root: $NodeSchemaInput; }",
+          output: "{ root: $NodeSchemaOutput; }",
+        }),
+      ],
+      mapName,
+    );
+    expect(output).toContain("root: $NodeInput;");
+    expect(output).toContain("root: $NodeOutput;");
+    expect(output).not.toContain("$NodeSchemaInput");
+  });
+
+  it("merges a $-prefixed schema under mergeSame", () => {
+    const output = generateDeclarationFile(
+      [
+        result({
+          schemaName: "$NodeSchema",
+          input: "{ label: string; }",
+          output: "{ label: string; }",
+        }),
+        result({
+          schemaName: "TreeSchema",
+          input: "{ root: $NodeSchemaInput; }",
+          output: "{ root: $NodeSchemaOutput; }",
+        }),
+      ],
+      mapName,
+      { mergeSame: true },
+    );
+    expect(output).toContain("export type $Node = {");
+    expect(output).toContain("root: $Node;");
+  });
 });
