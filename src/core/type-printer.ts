@@ -430,13 +430,14 @@ const NOT_AFTER_IDENTIFIER = "(?![\\p{ID_Continue}$])";
 /**
  * Builds a pattern matching `name` as a whole identifier - see
  * `NOT_BEFORE_IDENTIFIER` for why this exists instead of `\b`. Requires the
- * `u` flag, so it is always included alongside whatever `flags` the caller
- * passes.
+ * `u` flag, so it is included alongside whatever `flags` the caller passes -
+ * unless already present, since `RegExp` rejects a flags string with a
+ * repeated flag (e.g. `"guu"`).
  */
 function identifierPattern(name: string, flags = ""): RegExp {
   return new RegExp(
     `${NOT_BEFORE_IDENTIFIER}${escapeRegExp(name)}${NOT_AFTER_IDENTIFIER}`,
-    `${flags}u`,
+    flags.includes("u") ? flags : `${flags}u`,
   );
 }
 
@@ -716,16 +717,23 @@ function crossFileImportLines(
     }
   }
 
-  return [...namesByModule]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([moduleSpecifier, names]) => {
-      const specifiers = [...names]
-        .map(([localName, targetName]) =>
-          targetName === localName ? targetName : `${targetName} as ${localName}`,
-        )
-        .sort();
-      return `import type { ${specifiers.join(", ")} } from "${moduleSpecifier}";`;
-    });
+  return (
+    [...namesByModule]
+      // A cross-file schema that this file imports but never actually
+      // references (dead import, or its only reference got filtered out)
+      // leaves its module's name set empty - and `import type { }` is not
+      // valid TypeScript, so that module contributes no line at all.
+      .filter(([, names]) => names.size > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([moduleSpecifier, names]) => {
+        const specifiers = [...names]
+          .map(([localName, targetName]) =>
+            targetName === localName ? targetName : `${targetName} as ${localName}`,
+          )
+          .sort();
+        return `import type { ${specifiers.join(", ")} } from "${moduleSpecifier}";`;
+      })
+  );
 }
 
 /**

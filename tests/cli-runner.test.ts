@@ -378,6 +378,39 @@ describe("runCLI", () => {
       expect(tree).toContain('import type { $CrossFileNode } from "./node.generated";');
       expect(tree).toContain("root: $CrossFileNode;");
     });
+
+    it("emits no import line for a cross-file schema that is imported but never referenced", async () => {
+      // Every import declaration is picked up regardless of whether anything
+      // in the file actually uses it, so an unused one still lands in this
+      // file's own results with importedFrom set - and its name never shows
+      // up in the declarations, leaving nothing to import.
+      mkdirSync(join(workDir, "schemas/node"), { recursive: true });
+      mkdirSync(join(workDir, "schemas/tree"), { recursive: true });
+      cpSync(
+        join(fixturesDir, "cross-file-recursive/node-schema.ts"),
+        join(workDir, "schemas/node/schema.ts"),
+      );
+      writeFileSync(
+        join(workDir, "schemas/tree/schema.ts"),
+        [
+          'import * as v from "valibot";',
+          'import { CrossFileNodeSchema } from "../node/schema";',
+          "",
+          "export const CrossFileTreeSchema = v.object({",
+          "  label: v.string(),",
+          "});",
+        ].join("\n"),
+      );
+
+      await run(["schemas/**/schema.ts"], {
+        outDir: "types",
+        outPattern: "[dir].generated[ext]",
+        suffix: "Schema",
+      });
+
+      const tree = readFileSync(join(workDir, "types/tree.generated.ts"), "utf-8");
+      expect(tree).not.toContain("import type");
+    });
   });
 
   it("rewrites an annotation's import() specifier to reach from the output file", async () => {
