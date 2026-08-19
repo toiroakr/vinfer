@@ -416,6 +416,31 @@ function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Matches the empty position just before or after a run of identifier
+ * characters, without requiring one side to actually be an identifier
+ * character - `\b` is defined in terms of `\w` (`[A-Za-z0-9_]`), which
+ * excludes `$` (legal at the start of a JS/TS identifier) and every Unicode
+ * letter, so a name like `$NodeInput` or a schema named with accented
+ * characters never matches at all under `\b`.
+ */
+const NOT_BEFORE_IDENTIFIER = "(?<![\\p{ID_Continue}$])";
+const NOT_AFTER_IDENTIFIER = "(?![\\p{ID_Continue}$])";
+
+/**
+ * Builds a pattern matching `name` as a whole identifier - see
+ * `NOT_BEFORE_IDENTIFIER` for why this exists instead of `\b`. Requires the
+ * `u` flag, so it is included alongside whatever `flags` the caller passes -
+ * unless already present, since `RegExp` rejects a flags string with a
+ * repeated flag (e.g. `"guu"`).
+ */
+function identifierPattern(name: string, flags = ""): RegExp {
+  return new RegExp(
+    `${NOT_BEFORE_IDENTIFIER}${escapeRegExp(name)}${NOT_AFTER_IDENTIFIER}`,
+    flags.includes("u") ? flags : `${flags}u`,
+  );
+}
+
 export function formatMultipleAsDeclarations(
   results: ExtractResult[],
   mapName: (schemaName: string) => MappedTypeName,
@@ -437,12 +462,10 @@ export function formatMultipleAsDeclarations(
     let output = result.output;
 
     for (const [schemaName, mappedName] of typeNameMap) {
-      const escapedSchemaName = escapeRegExp(schemaName);
-
-      const inputPattern = new RegExp(`\\b${escapedSchemaName}Input\\b`, "g");
+      const inputPattern = identifierPattern(`${schemaName}Input`, "g");
       input = input.replace(inputPattern, mappedName.inputName);
 
-      const outputPattern = new RegExp(`\\b${escapedSchemaName}Output\\b`, "g");
+      const outputPattern = identifierPattern(`${schemaName}Output`, "g");
       output = output.replace(outputPattern, mappedName.outputName);
     }
 
@@ -460,8 +483,8 @@ export function formatMultipleAsDeclarations(
       const refSet = new Set<string>();
       for (const [, mapped] of typeNameMap) {
         if (mapped.inputName === mapped.unifiedName) continue;
-        const inputRe = new RegExp(`\\b${escapeRegExp(mapped.inputName)}\\b`);
-        const outputRe = new RegExp(`\\b${escapeRegExp(mapped.outputName)}\\b`);
+        const inputRe = identifierPattern(mapped.inputName);
+        const outputRe = identifierPattern(mapped.outputName);
         if (inputRe.test(result.input) || outputRe.test(result.output)) {
           refSet.add(mapped.inputName);
         }
@@ -534,10 +557,8 @@ export function formatMultipleAsDeclarations(
       for (const mergedSchema of mergedSet) {
         const mapped = typeNameMap.get(mergedSchema);
         if (!mapped) continue;
-        const escapedInput = escapeRegExp(mapped.inputName);
-        const escapedOutput = escapeRegExp(mapped.outputName);
-        input = input.replace(new RegExp(`\\b${escapedInput}\\b`, "g"), mapped.unifiedName);
-        output = output.replace(new RegExp(`\\b${escapedOutput}\\b`, "g"), mapped.unifiedName);
+        input = input.replace(identifierPattern(mapped.inputName, "g"), mapped.unifiedName);
+        output = output.replace(identifierPattern(mapped.outputName, "g"), mapped.unifiedName);
       }
 
       const mapped = typeNameMap.get(schemaName);
@@ -549,11 +570,11 @@ export function formatMultipleAsDeclarations(
       // no recursive schema could ever merge.
       if (mergeable) {
         const selfInput = input.replace(
-          new RegExp(`\\b${escapeRegExp(mapped.inputName)}\\b`, "g"),
+          identifierPattern(mapped.inputName, "g"),
           mapped.unifiedName,
         );
         const selfOutput = output.replace(
-          new RegExp(`\\b${escapeRegExp(mapped.outputName)}\\b`, "g"),
+          identifierPattern(mapped.outputName, "g"),
           mapped.unifiedName,
         );
         if (selfInput === selfOutput) {
@@ -598,7 +619,7 @@ export function formatMultipleAsDeclarations(
  */
 function usedValibotTypeNames(results: ExtractResult[]): string[] {
   return VALIBOT_PRINTED_TYPE_NAMES.filter((name) => {
-    const pattern = new RegExp(`\\b${name}<`);
+    const pattern = new RegExp(`${NOT_BEFORE_IDENTIFIER}${escapeRegExp(name)}<`, "u");
     return results.some((r) => pattern.test(r.input) || pattern.test(r.output));
   });
 }
@@ -691,21 +712,28 @@ function crossFileImportLines(
     }
 
     for (const [localName, targetName] of namePairs) {
-      if (!new RegExp(`\\b${escapeRegExp(localName)}\\b`).test(declarations)) continue;
+      if (!identifierPattern(localName).test(declarations)) continue;
       names.set(localName, targetName);
     }
   }
 
-  return [...namesByModule]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([moduleSpecifier, names]) => {
-      const specifiers = [...names]
-        .map(([localName, targetName]) =>
-          targetName === localName ? targetName : `${targetName} as ${localName}`,
-        )
-        .sort();
-      return `import type { ${specifiers.join(", ")} } from "${moduleSpecifier}";`;
-    });
+  return (
+    [...namesByModule]
+      // A cross-file schema that this file imports but never actually
+      // references (dead import, or its only reference got filtered out)
+      // leaves its module's name set empty - and `import type { }` is not
+      // valid TypeScript, so that module contributes no line at all.
+      .filter(([, names]) => names.size > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([moduleSpecifier, names]) => {
+        const specifiers = [...names]
+          .map(([localName, targetName]) =>
+            targetName === localName ? targetName : `${targetName} as ${localName}`,
+          )
+          .sort();
+        return `import type { ${specifiers.join(", ")} } from "${moduleSpecifier}";`;
+      })
+  );
 }
 
 /**

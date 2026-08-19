@@ -332,6 +332,85 @@ describe("runCLI", () => {
       );
       expect(tree).toContain("root: AliasedNode;");
     });
+
+    it("imports a $-prefixed recursive schema from the file that generates it", async () => {
+      // `\b` treats `$` as a non-word character, so a schema named with a `$`
+      // prefix used to make crossFileImportLines' own name-detection regex
+      // never match, silently dropping the import this test checks for.
+      mkdirSync(join(workDir, "schemas/node"), { recursive: true });
+      mkdirSync(join(workDir, "schemas/tree"), { recursive: true });
+      writeFileSync(
+        join(workDir, "schemas/node/schema.ts"),
+        [
+          'import * as v from "valibot";',
+          "",
+          "export const $CrossFileNodeSchema = v.object({",
+          "  name: v.string(),",
+          "  get children(): v.GenericSchema<Record<string, unknown>> {",
+          "    return v.record(v.string(), $CrossFileNodeSchema);",
+          "  },",
+          "});",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(workDir, "schemas/tree/schema.ts"),
+        [
+          'import * as v from "valibot";',
+          'import { $CrossFileNodeSchema } from "../node/schema";',
+          "",
+          "export const CrossFileTreeSchema = v.object({",
+          "  root: $CrossFileNodeSchema,",
+          "});",
+        ].join("\n"),
+      );
+
+      await run(["schemas/**/schema.ts"], {
+        outDir: "types",
+        outPattern: "[dir].generated[ext]",
+        suffix: "Schema",
+        outputSuffix: "",
+        mergeSame: true,
+      });
+
+      const node = readFileSync(join(workDir, "types/node.generated.ts"), "utf-8");
+      const tree = readFileSync(join(workDir, "types/tree.generated.ts"), "utf-8");
+      expect(node).toContain("export type $CrossFileNode = {");
+      expect(tree).toContain('import type { $CrossFileNode } from "./node.generated";');
+      expect(tree).toContain("root: $CrossFileNode;");
+    });
+
+    it("emits no import line for a cross-file schema that is imported but never referenced", async () => {
+      // Every import declaration is picked up regardless of whether anything
+      // in the file actually uses it, so an unused one still lands in this
+      // file's own results with importedFrom set - and its name never shows
+      // up in the declarations, leaving nothing to import.
+      mkdirSync(join(workDir, "schemas/node"), { recursive: true });
+      mkdirSync(join(workDir, "schemas/tree"), { recursive: true });
+      cpSync(
+        join(fixturesDir, "cross-file-recursive/node-schema.ts"),
+        join(workDir, "schemas/node/schema.ts"),
+      );
+      writeFileSync(
+        join(workDir, "schemas/tree/schema.ts"),
+        [
+          'import * as v from "valibot";',
+          'import { CrossFileNodeSchema } from "../node/schema";',
+          "",
+          "export const CrossFileTreeSchema = v.object({",
+          "  label: v.string(),",
+          "});",
+        ].join("\n"),
+      );
+
+      await run(["schemas/**/schema.ts"], {
+        outDir: "types",
+        outPattern: "[dir].generated[ext]",
+        suffix: "Schema",
+      });
+
+      const tree = readFileSync(join(workDir, "types/tree.generated.ts"), "utf-8");
+      expect(tree).not.toContain("import type");
+    });
   });
 
   it("rewrites an annotation's import() specifier to reach from the output file", async () => {
