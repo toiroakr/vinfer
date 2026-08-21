@@ -1,5 +1,6 @@
 import { Project, SourceFile, TypeFormatFlags, ts } from "ts-morph";
 import { resolve as resolvePath } from "pathe";
+import { realpathSync } from "fs";
 import {
   NORMALIZE_TYPE_DEFINITION,
   NORMALIZE_TYPE_NAMES,
@@ -123,17 +124,25 @@ function collapseRepeatedUndefined(typeStr: string): string {
  * `transformOutsideStringLiterals`: the `"..."` an `import()` type names is
  * itself a quoted string, so a literal-boundary scan that treats every quote
  * the same way would skip the very syntax this function exists to rewrite.
+ *
+ * `sourceDir` is realpath'd first: it always exists (a file was just read
+ * from it), and on a symlinked working directory (e.g. macOS's
+ * `/var` -> `/private/var` tmpdir) leaving it un-resolved here would produce
+ * an absolute path on a different symlink base than the output directory
+ * `relativizeImportPaths` later resolves against, corrupting the relative
+ * path between the two.
  */
 function absolutizeImportPaths(typeStr: string, sourceDir: string): string {
   if (!typeStr.includes('import("')) {
     return typeStr;
   }
 
+  const resolvedSourceDir = realpathSync(sourceDir);
   return typeStr.replace(/import\("([^"]+)"\)/g, (match, importPath: string) => {
     if (!importPath.startsWith(".")) {
       return match;
     }
-    return `import("${resolvePath(sourceDir, importPath)}")`;
+    return `import("${resolvePath(resolvedSourceDir, importPath)}")`;
   });
 }
 

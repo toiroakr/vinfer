@@ -1,4 +1,5 @@
-import { relative, dirname, isAbsolute } from "pathe";
+import { relative, dirname, basename, join, isAbsolute } from "pathe";
+import { existsSync, realpathSync } from "fs";
 import { VALIBOT_PRINTED_TYPE_NAMES } from "./valibot-bindings.js";
 import type {
   ExtractResult,
@@ -762,6 +763,23 @@ function crossFileImportLines(
 }
 
 /**
+ * Resolves `path` to its real, symlink-free form. `path` itself may not
+ * exist yet (an output directory that hasn't been created), so this walks up
+ * to the nearest existing ancestor, realpath's that, and re-appends the
+ * not-yet-existing part unresolved.
+ */
+function realpathExisting(path: string): string {
+  if (existsSync(path)) {
+    return realpathSync(path);
+  }
+  const parent = dirname(path);
+  if (parent === path) {
+    return path;
+  }
+  return join(realpathExisting(parent), basename(path));
+}
+
+/**
  * Converts absolute `import("...")` paths in generated type content to relative paths.
  *
  * TypeScript's type printer may emit absolute file paths in `import()` type syntax
@@ -773,7 +791,12 @@ function crossFileImportLines(
  * @returns Content with absolute import paths replaced by relative paths
  */
 export function relativizeImportPaths(content: string, outputFilePath: string): string {
-  const outputDir = dirname(outputFilePath);
+  // Realpath'd so a symlinked output directory (e.g. one built from an
+  // absolute path the caller passed through unresolved) lines up with the
+  // already-realpath'd absolute import paths extractor.ts produces - both
+  // must be resolved from the same symlink base for `relative()` below to
+  // compute a short, correct path instead of walking up through the root.
+  const outputDir = realpathExisting(dirname(outputFilePath));
 
   return content.replace(/import\("([^"]+)"\)/g, (_match, importPath: string) => {
     if (!isAbsolute(importPath)) {

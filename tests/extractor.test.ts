@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { resolve, basename } from "pathe";
 import { ValibotTypeExtractor } from "../src/core/extractor.js";
-import { generateDeclarationFile } from "../src/core/type-printer.js";
+import { generateDeclarationFile, relativizeImportPaths } from "../src/core/type-printer.js";
 import { createNameMapper } from "../src/core/name-mapper.js";
 import { DescriptionExtractor } from "../src/core/description-extractor.js";
 import { execFileSync } from "child_process";
@@ -523,6 +523,40 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
         ["export type WeirdInput = {", "  value: typeof import("].join("\n"),
       );
       expect(output).toMatch(/\)\.NodeSchemaInput;\n\s*NodeSchemaInput\(\): string;/);
+    });
+  });
+
+  describe("nested-import-path fixtures", () => {
+    it("should rebase an already-relative import(...) reference against the output file, not the source file, when the output directory differs from the source directory", () => {
+      const results = extractor.extractAll(
+        resolve(fixturesDir, "nested-import-path/deep/nested/schema.ts"),
+      );
+      const raw = generateDeclarationFile(results, mapName);
+
+      // Simulates outDir/outPattern remapping: the source lives two
+      // directories deeper (deep/nested/) than the output (out/), so a path
+      // that is merely left untouched from the printer's source-relative
+      // "./common" would be wrong once rebased against this output location.
+      const outputPath = resolve(fixturesDir, "nested-import-path/out/schema.generated.ts");
+      const output = relativizeImportPaths(raw, outputPath);
+
+      expect(output).toContain('import("../deep/nested/common")');
+      expect(output).not.toContain('import("./common")');
+    });
+  });
+
+  describe("nested-import-path/deep/nested/schema.ts", () => {
+    it("should generate a type-checkable declaration when the referenced type lives in a sibling file two directories deep", async () => {
+      const results = extractor.extractAll(
+        resolve(fixturesDir, "nested-import-path/deep/nested/schema.ts"),
+      );
+      const snapshotPath = resolve(snapshotsDir, "nested-import-path/deep/nested/schema.ts");
+      // Relativized against the snapshot's own location so this machine's
+      // absolute path is never baked into the committed snapshot.
+      const output = relativizeImportPaths(generateDeclarationFile(results, mapName), snapshotPath);
+      await expect(output).toMatchFileSnapshot(
+        "__file_snapshots__/nested-import-path/deep/nested/schema.ts",
+      );
     });
   });
 

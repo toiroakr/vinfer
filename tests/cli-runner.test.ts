@@ -477,6 +477,50 @@ describe("runCLI", () => {
     expect(await run([])).toContain("export type UserInput = {");
   });
 
+  it("rebases import() paths when outDir is an absolute path through a symlinked directory", async () => {
+    const realBase = mkdtempSync(join(tmpdir(), "vinfer-real-"));
+    const linkPath = mkdtempSync(join(tmpdir(), "vinfer-link-"));
+    rmSync(linkPath, { recursive: true, force: true });
+    symlinkSync(realBase, linkPath, "dir");
+
+    try {
+      symlinkSync(join(repoRoot, "node_modules"), join(realBase, "node_modules"), "dir");
+      mkdirSync(join(realBase, "src/shared"), { recursive: true });
+      mkdirSync(join(realBase, "src/schemas"), { recursive: true });
+      writeFileSync(join(realBase, "src/shared/kind.ts"), 'export type Kind = "a" | "b" | "c";\n');
+      writeFileSync(
+        join(realBase, "src/shared/model.ts"),
+        'import type { Kind } from "./kind";\n\nexport type Model = { kind: Kind; name: string };\n',
+      );
+      writeFileSync(
+        join(realBase, "src/schemas/schema.ts"),
+        'import * as v from "valibot";\n' +
+          'import type { Model } from "../shared/model";\n\n' +
+          "export const ModelSchema: v.GenericSchema<Model> = v.object({\n" +
+          '  kind: v.picklist(["a", "b", "c"]),\n' +
+          "  name: v.string(),\n" +
+          "});\n",
+      );
+      process.chdir(linkPath);
+
+      // outDir is given as an absolute path built from the symlink entry
+      // point, not derived from process.cwd() (which Node always reports
+      // fully resolved) - this is what a caller does when it stores a
+      // directory path before any chdir happens.
+      await runCLI(["src/schemas/schema.ts"], {
+        outDir: join(linkPath, "out"),
+        suffix: "Schema",
+      });
+
+      const output = readFileSync(join(realBase, "out/schema.types.ts"), "utf-8");
+      expect(output).toContain('import("../src/shared/kind").Kind');
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(linkPath, { recursive: true, force: true });
+      rmSync(realBase, { recursive: true, force: true });
+    }
+  });
+
   describe("failures", () => {
     it("rejects when no files are given", async () => {
       await expect(run([])).rejects.toThrow(/No files matched/);
