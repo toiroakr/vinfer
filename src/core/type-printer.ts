@@ -447,8 +447,8 @@ const NOT_AFTER_IDENTIFIER = "(?![\\p{ID_Continue}$])";
  * just the schema-name ones, since the same T can flow into the recursion
  * dependency lookups and `mergeSame` unification below.
  */
-const NOT_TYPEOF_OPERAND = "(?<!typeof\\s(?:import\\([^)]*\\)\\.)?)";
-const NOT_METHOD_NAME = "(?!\\()";
+const NOT_TYPEOF_OPERAND = "(?<!typeof\\s+(?:import\\([^)]*\\)\\.)?)";
+const NOT_METHOD_NAME = "(?!\\s*\\()";
 
 /**
  * Builds a pattern matching `name` as a whole identifier - see

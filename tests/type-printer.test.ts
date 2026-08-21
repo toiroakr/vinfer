@@ -288,4 +288,27 @@ describe("generateDeclarationFile", () => {
       'typeof import("./types").NodeSchemaOutput extends unknown ? { NodeSchemaOutput(): string; } : never',
     );
   });
+
+  it("does not rewrite a protected identifier across more than one space after `typeof` or before a method's `(`", () => {
+    // TypeScript's own printer always normalizes to exactly one space after
+    // `typeof` and none before a method's `(`, so this text never actually
+    // reaches identifierPattern this way in practice - but the guard should
+    // hold regardless of how many whitespace characters separate them,
+    // rather than assuming the printer's normalization forever.
+    const output = generateDeclarationFile(
+      [
+        result({ schemaName: "NodeSchema", input: "any", output: "any" }),
+        result({
+          schemaName: "WeirdSchema",
+          input: "{ value: typeof  NodeSchemaInput; NodeSchemaInput  (): string; }",
+          output: "{ value: typeof  NodeSchemaOutput; NodeSchemaOutput  (): string; }",
+        }),
+      ],
+      mapName,
+    );
+    expect(output).toContain("value: typeof  NodeSchemaInput;");
+    expect(output).toContain("NodeSchemaInput  (): string;");
+    expect(output).toContain("value: typeof  NodeSchemaOutput;");
+    expect(output).toContain("NodeSchemaOutput  (): string;");
+  });
 });
