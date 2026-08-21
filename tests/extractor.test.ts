@@ -508,6 +508,24 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     });
   });
 
+  describe("typeof-and-method-name-collision-schema.ts", () => {
+    it("does not rewrite a typeof operand or a method's own name just because the text matches another schema's generated Input name", () => {
+      // WeirdSchema's explicit annotation prints Weird verbatim - a typeof
+      // operand and a method name that both happen to spell out
+      // "NodeSchemaInput" (the Input name NodeSchema generates), without
+      // being references to it at all.
+      const results = extractor.extractAll(
+        resolve(fixturesDir, "typeof-and-method-name-collision-schema.ts"),
+      );
+      const output = generateDeclarationFile(results, mapName);
+
+      expect(output).toContain(
+        ["export type WeirdInput = {", "  value: typeof import("].join("\n"),
+      );
+      expect(output).toMatch(/\)\.NodeSchemaInput;\n\s*NodeSchemaInput\(\): string;/);
+    });
+  });
+
   describe("non-generated-intermediate-schema.ts", () => {
     /**
      * Runs the fixture through the same steps the CLI does for
