@@ -428,15 +428,40 @@ const NOT_BEFORE_IDENTIFIER = "(?<![\\p{ID_Continue}$])";
 const NOT_AFTER_IDENTIFIER = "(?![\\p{ID_Continue}$])";
 
 /**
+ * An explicit `v.GenericSchema<T>` annotation prints `T` verbatim, which can
+ * carry text that happens to spell out another schema's generated name
+ * without being a reference to it at all:
+ *
+ * - `typeof Name` is a type query naming `Name`'s own value, not its type -
+ *   substituting the generated type name there (`typeof GeneratedName`)
+ *   only happens to parse when that generated name is itself a value in
+ *   scope, and is wrong regardless: the printer meant the *original*
+ *   value, not whatever this pass renamed it to. `Name` here can itself be
+ *   printed as `import("...").Name` when it isn't otherwise in scope, so
+ *   the lookbehind covers both `typeof Name` and `typeof import("...").Name`.
+ * - `Name(): T` is a method signature - `Name` here names the method, not
+ *   a type, and substituting it corrupts the signature into
+ *   `<expanded>(): T`.
+ *
+ * Both are excluded from every identifier substitution in this file, not
+ * just the schema-name ones, since the same T can flow into the recursion
+ * dependency lookups and `mergeSame` unification below.
+ */
+const NOT_TYPEOF_OPERAND = "(?<!typeof\\s(?:import\\([^)]*\\)\\.)?)";
+const NOT_METHOD_NAME = "(?!\\()";
+
+/**
  * Builds a pattern matching `name` as a whole identifier - see
- * `NOT_BEFORE_IDENTIFIER` for why this exists instead of `\b`. Requires the
- * `u` flag, so it is included alongside whatever `flags` the caller passes -
- * unless already present, since `RegExp` rejects a flags string with a
- * repeated flag (e.g. `"guu"`).
+ * `NOT_BEFORE_IDENTIFIER` for why this exists instead of `\b`, and
+ * `NOT_TYPEOF_OPERAND`/`NOT_METHOD_NAME` for the two syntax positions this
+ * additionally refuses to match in. Requires the `u` flag, so it is
+ * included alongside whatever `flags` the caller passes - unless already
+ * present, since `RegExp` rejects a flags string with a repeated flag
+ * (e.g. `"guu"`).
  */
 function identifierPattern(name: string, flags = ""): RegExp {
   return new RegExp(
-    `${NOT_BEFORE_IDENTIFIER}${escapeRegExp(name)}${NOT_AFTER_IDENTIFIER}`,
+    `${NOT_TYPEOF_OPERAND}${NOT_BEFORE_IDENTIFIER}${escapeRegExp(name)}${NOT_AFTER_IDENTIFIER}${NOT_METHOD_NAME}`,
     flags.includes("u") ? flags : `${flags}u`,
   );
 }

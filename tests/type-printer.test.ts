@@ -253,4 +253,39 @@ describe("generateDeclarationFile", () => {
     expect(output).toContain("export type $Node = {");
     expect(output).toContain("root: $Node;");
   });
+
+  it("does not rewrite an unrelated identifier that merely spells out another schema's Input/Output name inside a typeof operand or a method signature", () => {
+    // WeirdSchema's explicit v.GenericSchema<T> annotation prints T verbatim,
+    // which can contain arbitrary text - here it happens to spell out
+    // "NodeSchemaInput"/"NodeSchemaOutput" both as a `typeof` operand
+    // (referencing a real value declared in the user's own file) and as a
+    // method name. Neither is a reference to NodeSchema's generated type;
+    // identifierPattern's name substitution must not touch them just
+    // because the text matches.
+    const output = generateDeclarationFile(
+      [
+        result({
+          schemaName: "NodeSchema",
+          input: "any",
+          output: "any",
+        }),
+        result({
+          schemaName: "WeirdSchema",
+          input:
+            'typeof import("./types").NodeSchemaInput extends unknown ? { NodeSchemaInput(): string; } : never',
+          output:
+            'typeof import("./types").NodeSchemaOutput extends unknown ? { NodeSchemaOutput(): string; } : never',
+        }),
+      ],
+      mapName,
+    );
+    // The generated NodeInput/NodeOutput declarations are unrelated to this -
+    // only the corruption inside WeirdInput/WeirdOutput is under test.
+    expect(output).toContain(
+      'typeof import("./types").NodeSchemaInput extends unknown ? { NodeSchemaInput(): string; } : never',
+    );
+    expect(output).toContain(
+      'typeof import("./types").NodeSchemaOutput extends unknown ? { NodeSchemaOutput(): string; } : never',
+    );
+  });
 });
