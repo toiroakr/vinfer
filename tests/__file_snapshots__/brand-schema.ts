@@ -33,3 +33,10 @@ export type UserOutput = {
 export type EmailInput = string;
 
 export type EmailOutput = string & Flavor<"Email">;
+
+export type BrandedUserInput = {
+  id: string;
+  name: string;
+};
+
+export type BrandedUserOutput = { id: string; name: string; } & Brand<"BrandedUser">;

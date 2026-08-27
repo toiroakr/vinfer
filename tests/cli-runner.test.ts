@@ -37,7 +37,7 @@ beforeEach(() => {
   // the work directory keeps every generated path relative to it. Valibot is
   // reached through a link to the repository's node_modules, since both the type
   // checker and the description extractor resolve it from the schema's location.
-  symlinkSync(join(repoRoot, "node_modules"), join(workDir, "node_modules"), "dir");
+  symlinkSync(join(repoRoot, "node_modules"), join(workDir, "node_modules"), "junction");
   mkdirSync(join(workDir, "schemas"), { recursive: true });
   cpSync(join(fixturesDir, "basic-schema.ts"), join(workDir, "schemas/basic-schema.ts"));
   cpSync(join(fixturesDir, "transform-schema.ts"), join(workDir, "schemas/transform-schema.ts"));
@@ -481,10 +481,10 @@ describe("runCLI", () => {
     const realBase = mkdtempSync(join(tmpdir(), "vinfer-real-"));
     const linkPath = mkdtempSync(join(tmpdir(), "vinfer-link-"));
     rmSync(linkPath, { recursive: true, force: true });
-    symlinkSync(realBase, linkPath, "dir");
+    symlinkSync(realBase, linkPath, "junction");
 
     try {
-      symlinkSync(join(repoRoot, "node_modules"), join(realBase, "node_modules"), "dir");
+      symlinkSync(join(repoRoot, "node_modules"), join(realBase, "node_modules"), "junction");
       mkdirSync(join(realBase, "src/shared"), { recursive: true });
       mkdirSync(join(realBase, "src/schemas"), { recursive: true });
       writeFileSync(join(realBase, "src/shared/kind.ts"), 'export type Kind = "a" | "b" | "c";\n');

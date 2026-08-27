@@ -1,4 +1,4 @@
-import { Project, SourceFile, TypeFormatFlags, ts } from "ts-morph";
+import { Project, SourceFile, TypeFormatFlags, ts, type EnumDeclaration } from "ts-morph";
 import { resolve as resolvePath } from "pathe";
 import { realpathSync } from "fs";
 import {
@@ -12,6 +12,7 @@ import { SchemaReferenceAnalyzer, type SchemaReferenceInfo } from "./schema-refe
 import { ImportResolver } from "./import-resolver.js";
 import { ValibotBindings } from "./valibot-bindings.js";
 import { logDebugError } from "./logger.js";
+import { isEscaped } from "./string-scan.js";
 import type { ExtractResult, FileExtractResult, DetectedSchema } from "./types.js";
 
 // Re-export ExtractResult for backward compatibility
@@ -43,19 +44,6 @@ interface RawSchemaType {
    * getter describes instead.
    */
   approximation?: { input: string; output: string };
-}
-
-/**
- * Checks whether the character at `index` is escaped by a preceding
- * backslash - one that itself is not escaped, so `\\"` (an escaped
- * backslash followed by an unescaped quote) does not count.
- */
-function isEscaped(str: string, index: number): boolean {
-  let backslashes = 0;
-  for (let i = index - 1; i >= 0 && str[i] === "\\"; i--) {
-    backslashes++;
-  }
-  return backslashes % 2 === 1;
 }
 
 /**
@@ -144,6 +132,27 @@ function absolutizeImportPaths(typeStr: string, sourceDir: string): string {
     }
     return `import("${resolvePath(resolvedSourceDir, importPath)}")`;
   });
+}
+
+/**
+ * Prints an enum as a literal union of its members' values, for expanding a
+ * same-file enum reference reached through an explicit type annotation.
+ *
+ * Returns `undefined` - leaving the caller's already-printed enum name in
+ * place - as soon as one member's value can't be statically resolved (e.g.
+ * initialized from a function call), rather than silently dropping just that
+ * member and printing a union narrower than the enum itself.
+ */
+function printEnumAsLiteralUnion(enumDecl: EnumDeclaration): string | undefined {
+  const values: string[] = [];
+  for (const member of enumDecl.getMembers()) {
+    const value = member.getValue();
+    if (typeof value === "string") values.push(`"${value}"`);
+    else if (typeof value === "number") values.push(value.toString());
+    else return undefined;
+  }
+
+  return values.length > 0 ? values.join(" | ") : undefined;
 }
 
 /**
@@ -804,23 +813,7 @@ export class ValibotTypeExtractor {
     if (/^[A-Z][a-zA-Z0-9]*$/.test(rawType)) {
       const enumDecl = sourceFile.getEnum(rawType);
       if (enumDecl) {
-        // Extract enum values
-        const members = enumDecl.getMembers();
-        const values = members
-          .map((member) => {
-            const value = member.getValue();
-            if (typeof value === "string") {
-              return `"${value}"`;
-            } else if (typeof value === "number") {
-              return value.toString();
-            }
-            return null;
-          })
-          .filter(Boolean);
-
-        if (values.length > 0) {
-          rawType = values.join(" | ");
-        }
+        rawType = printEnumAsLiteralUnion(enumDecl) ?? rawType;
       }
     }
 

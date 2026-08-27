@@ -1,6 +1,7 @@
 import { relative, dirname, basename, join, isAbsolute } from "pathe";
 import { existsSync, realpathSync } from "fs";
 import { VALIBOT_PRINTED_TYPE_NAMES } from "./valibot-bindings.js";
+import { isEscaped } from "./string-scan.js";
 import type {
   ExtractResult,
   MappedTypeName,
@@ -153,9 +154,10 @@ function createParserState(): ParserState {
 function updateStringState(
   state: ParserState,
   char: string,
-  prevChar: string | undefined,
+  typeStr: string,
+  index: number,
 ): boolean {
-  if ((char === '"' || char === "'" || char === "`") && prevChar !== "\\") {
+  if ((char === '"' || char === "'" || char === "`") && !isEscaped(typeStr, index)) {
     if (!state.inString) {
       state.inString = true;
       state.stringChar = char;
@@ -288,9 +290,8 @@ function prettifyObjectType(
 
   for (let i = 0; i < typeStr.length; i++) {
     const char = typeStr[i];
-    const prevChar = typeStr[i - 1];
 
-    const inString = updateStringState(state, char, prevChar);
+    const inString = updateStringState(state, char, typeStr, i);
 
     if (inString) {
       handleStringChar(state, char);
