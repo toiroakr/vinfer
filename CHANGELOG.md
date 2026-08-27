@@ -1,5 +1,29 @@
 # vinfer
 
+## 0.2.0
+
+### Minor Changes
+
+- 3699f73: Add `--inline-external-types` (config `inlineExternalTypes`) to replace an `import("...")` reference to a plain type reached through an explicit `v.GenericSchema<T>` annotation with that type's own structure, recursively across as many files as needed, instead of leaving the generated output pointing back at them. Off by default; existing generated output is unchanged unless the flag is set.
+
+  - A reference that would recurse into itself, directly or through another file, is left as a resolvable `import(...)` at the point it would repeat. A same-file type that isn't exported has no importable name to fall back to, so a cycle through one is left as a bare (unresolved) identifier instead - the same known limitation already documented for a local explicit annotation.
+  - A reference reached through a recursed-into file's own imports - printed by TypeScript as a bare name valid only in that file's own scope - is re-anchored to the same explicit, resolvable form before being embedded in the output.
+  - A qualified name (e.g. an enum member, `Kind.A`) or a generic instantiation (`Box<string>`) is never expanded, only referenced - expanding just the base name would strand the rest against whatever replaced it.
+  - A `typeof` operand and a method signature's own name are never expanded either, only referenced - substituting either would produce invalid syntax.
+  - An enum whose member value ts-morph cannot statically resolve (e.g. initialized from a function call) is left unexpanded entirely, rather than silently printing a literal union narrower than the enum itself - this also fixes the same silent-narrowing bug in the existing (flag-independent) same-file enum expansion `resolveType()` already performed.
+
+  Ported from [toiroakr/zinfer#446](https://github.com/toiroakr/zinfer/pull/446), [#447](https://github.com/toiroakr/zinfer/pull/447), and their review-fix follow-ups.
+
+### Patch Changes
+
+- bf9a76e: Fix a recursive getter field wrapped in `v.nullable()` losing its `| null` and being wrongly printed as an optional key (`?`) rather than a required one with a nullable value. `v.nullable()` and `v.undefinedable()` widen a field's value type without making the object key itself optional - unlike `v.optional()`, `v.exactOptional()`, and `v.nullish()`, which do. The getter resolver previously collapsed all of these into a single "is this wrapped in something" flag, so a `v.nullable()`-only recursive field ended up both missing `| null` in its printed type and incorrectly marked optional; a `v.undefinedable()`-only one was missing `| undefined` while also incorrectly marked optional. Both are now derived independently from the AST, matching Valibot's own `OptionalEntrySchema` semantics.
+- 4845e93: Port several bug fixes from `toiroakr/zinfer`, plus two related fixes found while porting them:
+
+  - Fix an enum-to-literal-union expansion bug: when a native `enum` referenced through `v.enum()` had a member whose value couldn't be statically resolved (e.g. initialized from a function call), the generated type silently dropped that member instead of the whole union, printing a type narrower than the enum itself and rejecting values TypeScript accepts. It now leaves the enum unexpanded in that case.
+  - Fix three occurrences of a naive string-literal boundary check (`prevChar !== "\\"`) that misjudged a string ending in an even number of backslashes (e.g. `"a\\\\"`) as still escaped. Replaced with the correct backslash-parity check already used elsewhere in the codebase, shared through a new `string-scan.ts` module.
+  - Fix `__Normalize` silently stripping the brand's symbol key - and with it the brand itself - from a schema branded as a whole object (`v.pipe(v.object({...}), v.brand("Tag"))`), instead of only from a branded field inside an object. (The same gap for a directly-branded tuple is deliberately left open; see the comment on `NORMALIZE_TYPE_DEFINITION` in `normalizer.ts` for why.)
+  - Use Windows-compatible directory junctions instead of symlinks in the CLI runner tests, matching zinfer.
+
 ## 0.1.4
 
 ### Patch Changes
