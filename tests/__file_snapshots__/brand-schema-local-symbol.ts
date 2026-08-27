@@ -44,3 +44,15 @@ export type UserOutput = {
 export type EmailInput = string;
 
 export type EmailOutput = string & { readonly [__flavor]?: "Email" };
+
+export type BrandedUserInput = {
+  id: string;
+  name: string;
+};
+
+export type BrandedUserOutput = {
+  id: string;
+  name: string;
+} & {
+  readonly [__brand]: "BrandedUser"
+};
