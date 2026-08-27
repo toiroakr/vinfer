@@ -13,6 +13,19 @@
  * branded and flavored primitives (`string & Brand<"UserId">`) intact wherever
  * they appear - including inside arrays, records, and unions. Their printed form
  * is canonicalized afterwards (see `canonicalizeValibotTypeNames`).
+ *
+ * An object that is itself branded (`v.pipe(v.object({...}), v.brand("Tag"))`) carries
+ * its brand as a symbol-keyed intersection member. Such a type is returned untouched
+ * rather than mapped, so the object branch doesn't strip that symbol key away and
+ * silently drop the brand.
+ *
+ * A directly-branded tuple has the same gap, but is deliberately left unfixed: adding
+ * the equivalent guard to the array/tuple branch adds one more conditional TypeScript
+ * evaluates per level of array recursion, which changes exactly where TypeScript gives
+ * up and prints `any` for a getter-based recursive array schema without a name to point
+ * at - breaking the `any`-placeholder detection getter-resolver.ts's recursive-getter
+ * resolution depends on. Fixing the tuple case needs a way to add the guard that
+ * doesn't shift that boundary; zinfer has the same open gap for the same reason.
  */
 export const NORMALIZE_TYPE_DEFINITION = `
 type __Normalize<T> =
@@ -33,9 +46,11 @@ type __Normalize<T> =
         : T extends string | number | boolean | bigint | symbol
           ? T
           : T extends object
-            ? T extends infer O
-              ? { [K in keyof O as K extends symbol ? never : K]: __Normalize<O[K]> }
-              : never
+            ? keyof T & symbol extends never
+              ? T extends infer O
+                ? { [K in keyof O as K extends symbol ? never : K]: __Normalize<O[K]> }
+                : never
+              : T
             : T;
 
 type __NormalizeTuple<T> =

@@ -1,6 +1,7 @@
 import { SourceFile, SyntaxKind, Node } from "ts-morph";
 import { ValibotBindings } from "./valibot-bindings.js";
 import { analyzeSchemaExpression, type SchemaExpressionRef } from "./schema-expression.js";
+import { isEscaped } from "./string-scan.js";
 
 /**
  * Information about a getter field in a `v.object()` schema.
@@ -258,9 +259,8 @@ function findValueEnd(typeStr: string, valueStart: number): number {
 
   while (index < typeStr.length) {
     const char = typeStr[index];
-    const prevChar = typeStr[index - 1];
 
-    if ((char === '"' || char === "'" || char === "`") && prevChar !== "\\") {
+    if ((char === '"' || char === "'" || char === "`") && !isEscaped(typeStr, index)) {
       if (!inString) {
         inString = true;
         stringChar = char;

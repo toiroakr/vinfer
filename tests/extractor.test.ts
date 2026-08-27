@@ -162,6 +162,21 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     "should generate TypeScript declarations with intersections",
   );
   createSchemaTest(extractor, "enum-schema", "should generate TypeScript declarations with enums");
+
+  describe("computed-enum-schema.ts", () => {
+    it("leaves an enum unexpanded rather than dropping an unresolvable member's value", () => {
+      const results = extractor.extractAll(resolve(fixturesDir, "computed-enum-schema.ts"));
+      const status = results.find((r) => r.schemaName === "StatusSchema");
+
+      // Silently narrowing to `"active" | "closed"` would reject a value
+      // TypeScript itself accepts (Pending). Left as the bare enum name
+      // instead, which cannot be printed self-contained here since the enum
+      // isn't exported - a known limitation, not asserted against.
+      expect(status?.input).toBe("Status");
+      expect(status?.output).toBe("Status");
+    });
+  });
+
   createSchemaTest(
     extractor,
     "utility-types-schema",
