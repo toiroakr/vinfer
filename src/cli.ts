@@ -34,7 +34,7 @@ program
   .option("--generate-tests", "Generate vitest type equality tests alongside type files")
   .option(
     "--inline-external-types",
-    "Inline a plain type an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it",
+    "Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it",
   )
   .option("-v, --verbose", "Enable verbose output")
   .action(async (files: string[], options: CLIOptions) => {

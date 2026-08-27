@@ -87,7 +87,7 @@ Options:
   --dry-run                  Preview without writing files
   --with-descriptions        Include v.description() as TSDoc comments
   --generate-tests           Generate vitest type equality tests alongside type files
-  --inline-external-types    Inline a plain type an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it
+  --inline-external-types    Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it
   -v, --verbose              Enable verbose output
   -V, --version              Output the version number
   -h, --help                 Display help
@@ -138,7 +138,7 @@ export default defineConfig({
   // Output v.description() as TSDoc
   withDescriptions: true,
 
-  // Inline a plain type an explicit v.GenericSchema<T> annotation reaches in another file
+  // Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file
   inlineExternalTypes: false,
 });
 ```
