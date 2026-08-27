@@ -88,6 +88,7 @@ Options:
   --with-descriptions        Include v.description() as TSDoc comments
   --generate-tests           Generate vitest type equality tests alongside type files
   --inline-external-types    Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it
+  --brand-strategy <strategy> How to represent a .brand()/.flavor() marker in the generated output (default: valibot-import)
   -v, --verbose              Enable verbose output
   -V, --version              Output the version number
   -h, --help                 Display help
@@ -140,6 +141,9 @@ export default defineConfig({
 
   // Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file
   inlineExternalTypes: false,
+
+  // How to represent a .brand()/.flavor() marker (default: "valibot-import")
+  brandStrategy: "valibot-import",
 });
 ```
 
@@ -330,6 +334,37 @@ export type UserSchemaOutput = {
 `v.brand()` and `v.flavor()` are transformation actions, so they only appear in the
 output type - never in the input type. Brands are preserved wherever they occur,
 including inside arrays, records, unions and nested objects.
+
+#### `--brand-strategy local-symbol`
+
+By default (`--brand-strategy valibot-import`), a branded/flavored output type imports
+`Brand`/`Flavor` from `"valibot"`. Pass `--brand-strategy local-symbol` to avoid that
+dependency: the generated file declares a local `unique symbol` once and reuses it for
+every brand/flavor it prints, so the output never imports valibot at all.
+
+```typescript
+declare const __brand: unique symbol;
+
+export type UserIdSchemaInput = string;
+
+export type UserIdSchemaOutput = string & { readonly [__brand]: "UserId" };
+```
+
+`v.flavor()` produces an optional marker property (`{ readonly [__flavor]?: "Tag" }`),
+matching Valibot's own looser, structural `Flavor<TName>` shape - unlike `Brand<TName>`,
+a flavored value doesn't have to carry the marker to be assignable.
+
+The local-symbol marker is intentionally a different shape from Valibot's own
+`Brand`/`Flavor`, so `--brand-strategy local-symbol` cannot be combined with
+`--generate-tests` (which asserts full type equality against `v.InferOutput<>`).
+
+**Cross-file limitation**: each generated file declares its own `unique symbol`, so
+two same-tag branded types printed into _separate_ output files (e.g. one per input
+file under `--outDir`) are not assignable to each other, even though their printed
+text looks identical - TypeScript's `unique symbol` ties identity to the declaration,
+not the name. `--brand-strategy valibot-import` doesn't have this limitation, since
+every file imports the same marker from valibot. A type referenced across generated
+files via an `import type` is unaffected either way.
 
 ## Circular Reference Support
 

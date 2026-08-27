@@ -312,3 +312,92 @@ describe("generateDeclarationFile", () => {
     expect(output).toContain("NodeSchemaOutput  (): string;");
   });
 });
+
+describe("brandStrategy: local-symbol", () => {
+  it("rewrites a Brand<Tag> marker to a local symbol-keyed property instead of importing Brand", () => {
+    const output = generateDeclarationFile(
+      [result({ output: 'string & Brand<"UserId">' })],
+      mapName,
+      { brandStrategy: "local-symbol" },
+    );
+    expect(output).toContain("declare const __brand: unique symbol;");
+    expect(output).toContain('string & { readonly [__brand]: "UserId" }');
+    expect(output).not.toContain("__flavor");
+    expect(output).not.toContain("valibot");
+  });
+
+  it("rewrites a Flavor<Tag> marker to an optional local symbol-keyed property instead of importing Flavor", () => {
+    const output = generateDeclarationFile(
+      [result({ output: 'string & Flavor<"Email">' })],
+      mapName,
+      { brandStrategy: "local-symbol" },
+    );
+    expect(output).toContain("declare const __flavor: unique symbol;");
+    expect(output).toContain('string & { readonly [__flavor]?: "Email" }');
+    expect(output).not.toContain("__brand");
+    expect(output).not.toContain("valibot");
+  });
+
+  it("declares only the local symbols actually used, both when a file has both", () => {
+    const output = generateDeclarationFile(
+      [
+        result({
+          output: '{ a: string & Brand<"A">; b: string & Flavor<"B">; }',
+        }),
+      ],
+      mapName,
+      { brandStrategy: "local-symbol" },
+    );
+    expect(output).toContain("declare const __brand: unique symbol;");
+    expect(output).toContain("declare const __flavor: unique symbol;");
+  });
+
+  it("does not declare a local symbol when no schema has a brand or flavor", () => {
+    const output = generateDeclarationFile([result()], mapName, { brandStrategy: "local-symbol" });
+    expect(output).not.toContain("__brand");
+    expect(output).not.toContain("__flavor");
+  });
+
+  it("does not rewrite a plain string literal that merely contains the text Brand<", () => {
+    const output = generateDeclarationFile(
+      [result({ output: '{ kind: "Brand<Fake>"; }' })],
+      mapName,
+      { brandStrategy: "local-symbol" },
+    );
+    expect(output).toContain('kind: "Brand<Fake>";');
+    expect(output).not.toContain("__brand");
+  });
+
+  it("does not rewrite an identifier that merely ends in ...Brand< (word-boundary check)", () => {
+    const output = generateDeclarationFile([result({ output: "FooBrand<string>" })], mapName, {
+      brandStrategy: "local-symbol",
+    });
+    expect(output).toContain("FooBrand<string>");
+    expect(output).not.toContain("__brand");
+  });
+
+  it("treats $ as an identifier character too, since it's valid in a TypeScript identifier", () => {
+    const output = generateDeclarationFile([result({ output: "Foo$Brand<string>" })], mapName, {
+      brandStrategy: "local-symbol",
+    });
+    expect(output).toContain("Foo$Brand<string>");
+    expect(output).not.toContain("__brand");
+  });
+
+  it("skips a > inside the tag's own string literal when finding the marker's end", () => {
+    const output = generateDeclarationFile([result({ output: 'string & Brand<"a>b">' })], mapName, {
+      brandStrategy: "local-symbol",
+    });
+    expect(output).toContain('{ readonly [__brand]: "a>b" }');
+  });
+
+  it("leaves Brand/Flavor markers and the valibot import untouched under the default strategy", () => {
+    const output = generateDeclarationFile(
+      [result({ output: 'string & Brand<"UserId">' })],
+      mapName,
+    );
+    expect(output).toContain('import type { Brand } from "valibot";');
+    expect(output).toContain('string & Brand<"UserId">');
+    expect(output).not.toContain("__brand");
+  });
+});

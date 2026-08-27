@@ -243,6 +243,13 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
     "brand-schema",
     "should generate TypeScript declarations with brand information",
   );
+  describe("brand-schema.ts (brandStrategy: local-symbol)", () => {
+    it("should emit a local symbol marker instead of importing Brand/Flavor from valibot", async () => {
+      const results = extractor.extractAll(resolve(fixturesDir, "brand-schema.ts"));
+      const output = generateDeclarationFile(results, mapName, { brandStrategy: "local-symbol" });
+      await expect(output).toMatchFileSnapshot("__file_snapshots__/brand-schema-local-symbol.ts");
+    });
+  });
   createSchemaTest(
     extractor,
     "described-ref-schema",

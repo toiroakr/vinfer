@@ -436,6 +436,42 @@ describe("runCLI", () => {
     expect(generated).not.toMatch(/(?:boolean|string) \| undefined \| undefined/);
   });
 
+  describe("--brand-strategy local-symbol", () => {
+    it("emits a local symbol marker instead of importing Brand/Flavor from valibot", async () => {
+      cpSync(join(fixturesDir, "brand-schema.ts"), join(workDir, "schemas/brand-schema.ts"));
+
+      const output = await run(["schemas/brand-schema.ts"], { brandStrategy: "local-symbol" });
+
+      expect(output).toContain("declare const __brand: unique symbol;");
+      expect(output).toContain("declare const __flavor: unique symbol;");
+      expect(output).toContain('{ readonly [__brand]: "UserId" }');
+      expect(output).toContain('{ readonly [__flavor]?: "Email" }');
+      expect(output).not.toContain("valibot");
+    });
+
+    it("does not affect output when the default strategy is used", async () => {
+      cpSync(join(fixturesDir, "brand-schema.ts"), join(workDir, "schemas/brand-schema.ts"));
+
+      const output = await run(["schemas/brand-schema.ts"]);
+
+      expect(output).toContain('import type { Brand, Flavor } from "valibot";');
+      expect(output).not.toContain("__brand");
+    });
+
+    it("is wired through a config file, not just the CLI flag", async () => {
+      cpSync(join(fixturesDir, "brand-schema.ts"), join(workDir, "schemas/brand-schema.ts"));
+      writeFileSync(
+        join(workDir, "vinfer.config.mjs"),
+        'export default { include: ["schemas/brand-schema.ts"], brandStrategy: "local-symbol" };',
+      );
+
+      const output = await run([]);
+
+      expect(output).toContain("declare const __brand: unique symbol;");
+      expect(output).not.toContain("valibot");
+    });
+  });
+
   it("reads options from vinfer.config.mjs", async () => {
     writeFileSync(
       join(workDir, "vinfer.config.mjs"),
@@ -563,6 +599,24 @@ describe("runCLI", () => {
       await expect(run(["schemas/basic-schema.ts"], { generateTests: true })).rejects.toThrow(
         /--generate-tests requires --outDir or --outFile/,
       );
+    });
+
+    it("rejects --generate-tests together with --brand-strategy local-symbol", async () => {
+      await expect(
+        run(["schemas/basic-schema.ts"], {
+          generateTests: true,
+          outDir: "types",
+          brandStrategy: "local-symbol",
+        }),
+      ).rejects.toThrow(/Cannot be used with --brand-strategy local-symbol/);
+    });
+
+    it("rejects an invalid --brand-strategy value from a config file", async () => {
+      writeFileSync(
+        join(workDir, "vinfer.config.mjs"),
+        'export default { include: ["schemas/basic-schema.ts"], brandStrategy: "nope" };',
+      );
+      await expect(run([])).rejects.toThrow(/Invalid option "--brand-strategy"/);
     });
 
     it("rejects an invalid schema name", async () => {
