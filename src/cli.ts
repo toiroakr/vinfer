@@ -32,6 +32,10 @@ program
   .option("--dry-run", "Preview without writing files")
   .option("--with-descriptions", "Include v.description() as TSDoc comments")
   .option("--generate-tests", "Generate vitest type equality tests alongside type files")
+  .option(
+    "--inline-external-types",
+    "Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it",
+  )
   .option("-v, --verbose", "Enable verbose output")
   .action(async (files: string[], options: CLIOptions) => {
     try {

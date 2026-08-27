@@ -87,6 +87,7 @@ Options:
   --dry-run                  Preview without writing files
   --with-descriptions        Include v.description() as TSDoc comments
   --generate-tests           Generate vitest type equality tests alongside type files
+  --inline-external-types    Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it
   -v, --verbose              Enable verbose output
   -V, --version              Output the version number
   -h, --help                 Display help
@@ -136,6 +137,9 @@ export default defineConfig({
 
   // Output v.description() as TSDoc
   withDescriptions: true,
+
+  // Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file
+  inlineExternalTypes: false,
 });
 ```
 
@@ -602,6 +606,49 @@ printed differently on purpose:
 | `v.intersect([A, B])`                    | `A & B`                          | a single flattened object                           |
 | `v.looseObject()` / `v.objectWithRest()` | `entries & { [key: string]: … }` | the index signature inside the object               |
 | `v.enum(SomeEnum)`                       | the enum's member types          | the underlying literals, so the output stands alone |
+
+## Inlining External Types (`--inline-external-types`)
+
+When a schema carries an explicit `v.GenericSchema<T>` annotation and `T` reaches a plain (non-Valibot) `type`/`interface`/`enum` declared in another file, TypeScript prints an `import("...").Name` reference to it rather than expanding it - there is nothing else visible to print from that location. By default vinfer keeps that reference (rewritten to resolve correctly from wherever the output is written). Setting `--inline-external-types` replaces it with the referenced type's own structure instead, recursively, so the generated output carries no dependency on the original file layout - useful when generated files are moved, published, or read outside the project that declares those types.
+
+```typescript
+// field.types.ts
+export type FieldType = "uuid" | "string" | "number" | "boolean";
+export type FieldOutput = { type: FieldType; fields?: Record<string, FieldOutput> };
+
+// field.schema.ts
+import * as v from "valibot";
+import type { FieldOutput } from "./field.types";
+
+export const FieldSchema: v.GenericSchema<FieldOutput> = v.lazy(() =>
+  v.object({
+    type: v.picklist(["uuid", "string", "number", "boolean"]),
+    fields: v.optional(v.record(v.string(), FieldSchema)),
+  }),
+);
+```
+
+Without the flag, `FieldType` is referenced:
+
+```typescript
+export type FieldOutput = {
+  type: import("./field.types").FieldType;
+  fields?: Record<string, FieldOutput>;
+};
+```
+
+With `--inline-external-types`, it's expanded in place:
+
+```typescript
+export type FieldOutput = {
+  type: "uuid" | "string" | "number" | "boolean";
+  fields?: Record<string, FieldOutput>;
+};
+```
+
+The expansion follows references across as many files as needed. A reference that would recurse into itself - directly, or by cycling back through another file - is left as an `import(...)` at the point it would repeat; everything outside the cycle is still fully expanded. A same-file type that isn't exported has no importable name to fall back to, so a cycle through one is left as a bare (unresolved) identifier - the same known limitation as a non-exported local explicit-annotation type. Namespace imports (`import * as ns`), default-imported types, and generic instantiations (`import("...").Foo<Bar>`) aren't expanded either; each is left as the reference vinfer would otherwise print.
+
+This only applies to a plain type reached through an explicit `v.GenericSchema<T>` annotation - a Valibot schema imported from another file is unaffected, and continues to be referenced by its own generated type name or inlined as already described elsewhere in this document.
 
 ## Subpath Imports
 

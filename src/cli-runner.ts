@@ -52,6 +52,7 @@ export interface CLIOptions {
   config?: string;
   generateTests?: boolean;
   verbose?: boolean;
+  inlineExternalTypes?: boolean;
 }
 
 /**
@@ -136,8 +137,10 @@ export async function runCLI(files: string[], options: CLIOptions): Promise<void
   // gets written out: without a file output there is nowhere to import from,
   // and a schema filter may drop the very declaration a reference points at.
   const writesFiles = Boolean(config.outDir || config.outFile || config.outPattern);
-  const extractContext: ExtractContext =
-    writesFiles && !schemaFilter ? { importableFiles: new Set(resolvedFiles) } : {};
+  const extractContext: ExtractContext = {
+    inlineExternalTypes: config.inlineExternalTypes,
+    ...(writesFiles && !schemaFilter ? { importableFiles: new Set(resolvedFiles) } : {}),
+  };
 
   // Single output file mode
   if (config.outFile) {
@@ -407,6 +410,8 @@ function mergeCliWithConfig(cliOptions: CLIOptions, fileConfig: VinferConfig): V
   if (cliOptions.withDescriptions !== undefined)
     merged.withDescriptions = cliOptions.withDescriptions;
   if (cliOptions.generateTests !== undefined) merged.generateTests = cliOptions.generateTests;
+  if (cliOptions.inlineExternalTypes !== undefined)
+    merged.inlineExternalTypes = cliOptions.inlineExternalTypes;
 
   return merged;
 }
