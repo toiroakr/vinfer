@@ -22,6 +22,10 @@ export interface SchemaReferenceInfo {
   isRecord: boolean;
   /** Whether optional */
   isOptional: boolean;
+  /** Whether the value type includes `null` */
+  isNullable: boolean;
+  /** Whether the value type includes `undefined` without the key being optional */
+  isUndefinedable: boolean;
 }
 
 /**

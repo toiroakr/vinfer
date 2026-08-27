@@ -24,6 +24,46 @@ export type NestedRecordOutput = {
   };
 };
 
+export type NullableTreeInput = {
+  value: string;
+  children: NullableTreeInput[] | null;
+};
+
+export type NullableTreeOutput = {
+  value: string;
+  children: NullableTreeOutput[] | null;
+};
+
+export type NullishTreeInput = {
+  value: string;
+  children?: NullishTreeInput[] | null;
+};
+
+export type NullishTreeOutput = {
+  value: string;
+  children?: NullishTreeOutput[] | null;
+};
+
+export type NullableOptionalTreeInput = {
+  value: string;
+  children?: NullableOptionalTreeInput[] | null;
+};
+
+export type NullableOptionalTreeOutput = {
+  value: string;
+  children?: NullableOptionalTreeOutput[] | null;
+};
+
+export type UndefinedableTreeInput = {
+  value: string;
+  children: UndefinedableTreeInput[] | undefined;
+};
+
+export type UndefinedableTreeOutput = {
+  value: string;
+  children: UndefinedableTreeOutput[] | undefined;
+};
+
 export type CallbackInput = {
   name: string;
   callback: Function;

@@ -29,6 +29,8 @@ describe("analyzeSchemaExpression", () => {
       isArray: false,
       isRecord: false,
       isOptional: false,
+      isNullable: false,
+      isUndefinedable: false,
     });
   });
 
@@ -40,16 +42,25 @@ describe("analyzeSchemaExpression", () => {
     });
   });
 
+  // Per Valibot's own `OptionalEntrySchema` mapped type, only optional/
+  // exactOptional/nullish mark the object key itself optional - nullable and
+  // undefinedable only widen the value's type (see valibot-bindings.ts).
   it.each([
-    "v.optional(AddressSchema)",
-    "v.exactOptional(AddressSchema)",
-    "v.nullable(AddressSchema)",
-    "v.nullish(AddressSchema)",
-    "v.undefinedable(AddressSchema)",
-  ])("resolves a reference through %s", (expression) => {
+    ["v.optional(AddressSchema)", { isOptional: true, isNullable: false, isUndefinedable: false }],
+    [
+      "v.exactOptional(AddressSchema)",
+      { isOptional: true, isNullable: false, isUndefinedable: false },
+    ],
+    ["v.nullable(AddressSchema)", { isOptional: false, isNullable: true, isUndefinedable: false }],
+    ["v.nullish(AddressSchema)", { isOptional: true, isNullable: true, isUndefinedable: false }],
+    [
+      "v.undefinedable(AddressSchema)",
+      { isOptional: false, isNullable: false, isUndefinedable: true },
+    ],
+  ] as const)("resolves a reference through %s", (expression, expected) => {
     expect(analyze(expression)).toMatchObject({
       refSchema: "AddressSchema",
-      isOptional: true,
+      ...expected,
     });
   });
 
@@ -59,6 +70,19 @@ describe("analyzeSchemaExpression", () => {
       isArray: true,
       isRecord: false,
       isOptional: true,
+      isNullable: false,
+      isUndefinedable: false,
+    });
+  });
+
+  it("accumulates flags across separately composed wrappers", () => {
+    // v.optional(v.nullable(...)) has the same effect as v.nullish(...) but is
+    // written as two independent wrapper calls peeled one at a time.
+    expect(analyze("v.optional(v.nullable(AddressSchema))")).toMatchObject({
+      refSchema: "AddressSchema",
+      isOptional: true,
+      isNullable: true,
+      isUndefinedable: false,
     });
   });
 

@@ -285,6 +285,40 @@ export const VALIBOT_OPTIONAL_WRAPPERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Wrapper schemas that mark the wrapped key optional on an object (the key may
+ * be omitted entirely). Per Valibot's own `OptionalEntrySchema` mapped type,
+ * `nullable` and `undefinedable` widen the value's type but do not make the key
+ * itself optional - only these do.
+ */
+export const VALIBOT_OPTIONAL_KEY_WRAPPERS: ReadonlySet<string> = new Set([
+  "optional",
+  "optionalAsync",
+  "exactOptional",
+  "exactOptionalAsync",
+  "nullish",
+  "nullishAsync",
+]);
+
+/**
+ * Wrapper schemas that add `null` to the wrapped value's type.
+ */
+export const VALIBOT_NULLABLE_WRAPPERS: ReadonlySet<string> = new Set([
+  "nullable",
+  "nullableAsync",
+  "nullish",
+  "nullishAsync",
+]);
+
+/**
+ * Wrapper schemas that add `undefined` to the wrapped value's type without
+ * making the key itself optional (unlike `optional` / `nullish`).
+ */
+export const VALIBOT_UNDEFINEDABLE_WRAPPERS: ReadonlySet<string> = new Set([
+  "undefinedable",
+  "undefinedableAsync",
+]);
+
+/**
  * `v.array(...)` builders.
  */
 export const VALIBOT_ARRAY_BUILDERS: ReadonlySet<string> = new Set(["array", "arrayAsync"]);
