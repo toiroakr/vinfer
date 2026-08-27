@@ -787,6 +787,22 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
       expect(result?.input).toContain("GenericBox<T extends (x: string) => void>(): T");
       expect(result?.input).toMatch(/boxed: import\(".*box"\)\.GenericBox<string>/);
     });
+
+    it("should wrap an expanded function type in parens before an array suffix, not just a union or intersection", () => {
+      // Callback is visible in holder.ts, so expanding Holder's own
+      // declaration prints "callbacks: Callback[]" - a bare identifier
+      // that promoteBareTypeReferences expands to Callback's own
+      // function-type structure. Without wrapping, "(value: string) =>
+      // string[]" would mean a function returning string[], not an array
+      // of such functions.
+      const results = extractor.extractAll(
+        resolve(fixturesDir, "inline-external-types/suffix-wrap/schema.ts"),
+        { inlineExternalTypes: true },
+      );
+      const result = results.find((r) => r.schemaName === "SuffixWrapSchema");
+
+      expect(result?.input).toBe("{ callbacks: ((value: string) => string)[]; }");
+    });
   });
 
   createSchemaTest(extractor, "inline-external-types/chain/schema");
