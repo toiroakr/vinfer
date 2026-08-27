@@ -243,6 +243,33 @@ function hasTopLevelUnionOrIntersection(typeText: string): boolean {
 }
 
 /**
+ * Whether `text[afterIdentifier]` begins a generic method signature's own
+ * type parameter list (`<T>(`), not a generic type instantiation (`<Args>`
+ * with no method call following). Scans a balanced `<...>` run - TypeScript's
+ * printer never emits a bare `<`/`>` comparison operator here, only matched
+ * pairs delimiting type parameters/arguments - and checks whether `(`
+ * immediately follows the close.
+ */
+function isGenericMethodSignature(text: string, afterIdentifier: number): boolean {
+  if (text[afterIdentifier] !== "<") return false;
+
+  let depth = 0;
+  let i = afterIdentifier;
+  for (; i < text.length; i++) {
+    if (text[i] === "<") depth++;
+    else if (text[i] === ">") {
+      depth--;
+      if (depth === 0) {
+        i++;
+        break;
+      }
+    }
+  }
+
+  return text[i] === "(";
+}
+
+/**
  * The module specifier form of a file's own path: absolute, without a
  * source extension, matching what TypeScript itself prints inside a
  * synthesized `import("...")` type and what `resolveModuleSourceFile`
@@ -250,7 +277,16 @@ function hasTopLevelUnionOrIntersection(typeText: string): boolean {
  * cycle-detection key.
  */
 function modulePathFor(sourceFile: SourceFile): string {
-  return sourceFile.getFilePath().replace(/\.d\.(ts|mts|cts)$|\.(ts|tsx|mts|cts)$/, "");
+  // Realpath'd for the same reason absolutizeImportPaths's sourceDir is: a
+  // symlinked ancestor directory (e.g. macOS's /var -> /private/var tmpdir)
+  // would otherwise make this land on a different symlink base than the
+  // import("...") text absolutizeImportPaths already produced, corrupting
+  // both resolveModuleSourceFile's filesystem lookup and the cycle-detection
+  // keys built from it.
+  return realpathSync(sourceFile.getFilePath()).replace(
+    /\.d\.(ts|mts|cts)$|\.(ts|tsx|mts|cts)$/,
+    "",
+  );
 }
 
 /**
@@ -1138,11 +1174,14 @@ export class ValibotTypeExtractor {
         // space), so this is how the two are told apart without a parser.
         const nextChar = text[end];
         const isPropertyKey = nextChar === ":" || (nextChar === "?" && text[end + 1] === ":");
-        // A method signature's name (`Name(): T`) is not a type reference
-        // at all - substituting it would corrupt the method's own name,
-        // not a type. `(` never otherwise directly follows a bare type
-        // reference this scan produces.
-        const isMethodName = nextChar === "(";
+        // A method signature's name (`Name(): T`, or a generic method's own
+        // `Name<T>(): T`) is not a type reference at all - substituting it
+        // would corrupt the method's own name, not a type. Checking only
+        // `nextChar === "("` misses the generic form, where `<` reads as
+        // `isQualifiedOrGeneric` instead and would strand `<T>(): T` after
+        // an `import("...").Name` substitution - invalid syntax, since a
+        // method signature's name can never be a qualified expression.
+        const isMethodName = nextChar === "(" || isGenericMethodSignature(text, end);
         // `Name.Member` (a qualified name, e.g. an enum member) or
         // `Name<Args>` (a generic instantiation): substituting only `Name`
         // would strand `.Member`/`<Args>` against whatever replaces it.

@@ -772,6 +772,17 @@ describe("ValibotTypeExtractor - Generated TypeScript Declarations", () => {
       // expanded into Box's own structure, not the method signature.
       expect(result?.input).toContain("Box(): string");
       expect(result?.input).toContain("value: { value: string; }");
+
+      // GenericBox<T>() is the same collision via the method's own type
+      // parameter list - `<T>` must not be read as a generic instantiation
+      // of the imported GenericBox, which would strand it after an
+      // import("...").GenericBox rewrite. The `boxed` field is a genuine
+      // generic instantiation of GenericBox (unlike the method signature
+      // above it), so it stays referenced rather than expanded - the same
+      // qualified-name/generic-instantiation rule the qualified/ fixtures
+      // already cover, here exercised through the identical-looking `<T>`.
+      expect(result?.input).toContain("GenericBox<T>(): T");
+      expect(result?.input).toMatch(/boxed: import\(".*box"\)\.GenericBox<string>/);
     });
   });
 

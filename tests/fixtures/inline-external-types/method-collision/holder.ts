@@ -1,4 +1,4 @@
-import type { Box } from "./box";
+import type { Box, GenericBox } from "./box";
 
 // Box() is a method signature, not a type reference - even though its
 // name collides with the imported type Box. Substituting the method name
@@ -7,4 +7,14 @@ import type { Box } from "./box";
 // bare-reference promotion (see wrapper.ts): TypeScript's own top-level
 // synthesis never produces this ambiguity, since it always prefixes with
 // `import("...").`.
-export type Holder = { Box(): string; value: Box };
+//
+// GenericBox<T>() is the same collision, but with the method's own type
+// parameter list: `<T>` reads like a generic type instantiation
+// (GenericBox<Args>) at a glance, so this exercises the guard that tells
+// the two apart by checking whether `(` follows the closing `>`.
+export type Holder = {
+  Box(): string;
+  GenericBox<T>(): T;
+  value: Box;
+  boxed: GenericBox<string>;
+};
