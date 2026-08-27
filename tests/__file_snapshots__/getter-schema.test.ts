@@ -5,12 +5,20 @@ import { describe, it, expectTypeOf } from "vitest";
 import type * as v from "valibot";
 
 // --- getter-schema ---
-import { TreeNodeSchema as GetterSchemaTreeNodeSchema, NestedRecordSchema as GetterSchemaNestedRecordSchema, CallbackSchema as GetterSchemaCallbackSchema } from "../fixtures/getter-schema";
+import { TreeNodeSchema as GetterSchemaTreeNodeSchema, NestedRecordSchema as GetterSchemaNestedRecordSchema, NullableTreeSchema as GetterSchemaNullableTreeSchema, NullishTreeSchema as GetterSchemaNullishTreeSchema, NullableOptionalTreeSchema as GetterSchemaNullableOptionalTreeSchema, UndefinedableTreeSchema as GetterSchemaUndefinedableTreeSchema, CallbackSchema as GetterSchemaCallbackSchema } from "../fixtures/getter-schema";
 import type {
   TreeNodeInput as GetterSchemaTreeNodeInput,
   TreeNodeOutput as GetterSchemaTreeNodeOutput,
   NestedRecordInput as GetterSchemaNestedRecordInput,
   NestedRecordOutput as GetterSchemaNestedRecordOutput,
+  NullableTreeInput as GetterSchemaNullableTreeInput,
+  NullableTreeOutput as GetterSchemaNullableTreeOutput,
+  NullishTreeInput as GetterSchemaNullishTreeInput,
+  NullishTreeOutput as GetterSchemaNullishTreeOutput,
+  NullableOptionalTreeInput as GetterSchemaNullableOptionalTreeInput,
+  NullableOptionalTreeOutput as GetterSchemaNullableOptionalTreeOutput,
+  UndefinedableTreeInput as GetterSchemaUndefinedableTreeInput,
+  UndefinedableTreeOutput as GetterSchemaUndefinedableTreeOutput,
   CallbackInput as GetterSchemaCallbackInput,
   CallbackOutput as GetterSchemaCallbackOutput,
 } from "./getter-schema";
@@ -31,6 +39,38 @@ describe("Type equality tests", () => {
 
     it("NestedRecordSchema output matches v.InferOutput", () => {
       expectTypeOf<GetterSchemaNestedRecordOutput>().toEqualTypeOf<v.InferOutput<typeof GetterSchemaNestedRecordSchema>>();
+    });
+
+    it("NullableTreeSchema input matches v.InferInput", () => {
+      expectTypeOf<GetterSchemaNullableTreeInput>().toEqualTypeOf<v.InferInput<typeof GetterSchemaNullableTreeSchema>>();
+    });
+
+    it("NullableTreeSchema output matches v.InferOutput", () => {
+      expectTypeOf<GetterSchemaNullableTreeOutput>().toEqualTypeOf<v.InferOutput<typeof GetterSchemaNullableTreeSchema>>();
+    });
+
+    it("NullishTreeSchema input matches v.InferInput", () => {
+      expectTypeOf<GetterSchemaNullishTreeInput>().toEqualTypeOf<v.InferInput<typeof GetterSchemaNullishTreeSchema>>();
+    });
+
+    it("NullishTreeSchema output matches v.InferOutput", () => {
+      expectTypeOf<GetterSchemaNullishTreeOutput>().toEqualTypeOf<v.InferOutput<typeof GetterSchemaNullishTreeSchema>>();
+    });
+
+    it("NullableOptionalTreeSchema input matches v.InferInput", () => {
+      expectTypeOf<GetterSchemaNullableOptionalTreeInput>().toEqualTypeOf<v.InferInput<typeof GetterSchemaNullableOptionalTreeSchema>>();
+    });
+
+    it("NullableOptionalTreeSchema output matches v.InferOutput", () => {
+      expectTypeOf<GetterSchemaNullableOptionalTreeOutput>().toEqualTypeOf<v.InferOutput<typeof GetterSchemaNullableOptionalTreeSchema>>();
+    });
+
+    it("UndefinedableTreeSchema input matches v.InferInput", () => {
+      expectTypeOf<GetterSchemaUndefinedableTreeInput>().toEqualTypeOf<v.InferInput<typeof GetterSchemaUndefinedableTreeSchema>>();
+    });
+
+    it("UndefinedableTreeSchema output matches v.InferOutput", () => {
+      expectTypeOf<GetterSchemaUndefinedableTreeOutput>().toEqualTypeOf<v.InferOutput<typeof GetterSchemaUndefinedableTreeSchema>>();
     });
 
     it("CallbackSchema input matches v.InferInput", () => {

@@ -2,11 +2,14 @@ import { Node } from "ts-morph";
 import {
   ValibotBindings,
   VALIBOT_ARRAY_BUILDERS,
+  VALIBOT_NULLABLE_WRAPPERS,
+  VALIBOT_OPTIONAL_KEY_WRAPPERS,
   VALIBOT_OPTIONAL_WRAPPERS,
   VALIBOT_PIPE_BUILDERS,
   VALIBOT_RECORD_BUILDERS,
   VALIBOT_SCHEMA_PRODUCERS,
   VALIBOT_TYPE_CHANGING_ACTIONS,
+  VALIBOT_UNDEFINEDABLE_WRAPPERS,
 } from "./valibot-bindings.js";
 
 /**
@@ -19,8 +22,17 @@ export interface SchemaExpressionRef {
   isArray: boolean;
   /** Whether the reference is the value schema of a `v.record()` */
   isRecord: boolean;
-  /** Whether the reference is wrapped in `v.optional()` / `v.nullable()` / ... */
+  /**
+   * Whether the reference's key may be omitted entirely (`v.optional()` /
+   * `v.exactOptional()` / `v.nullish()`). Distinct from `isNullable`: Valibot's
+   * `v.nullable()` and `v.undefinedable()` widen the value's type without
+   * making the key itself optional.
+   */
   isOptional: boolean;
+  /** Whether the reference's value type includes `null` (`v.nullable()` / `v.nullish()`) */
+  isNullable: boolean;
+  /** Whether the reference's value type includes `undefined` without the key being optional (`v.undefinedable()`) */
+  isUndefinedable: boolean;
 }
 
 /**
@@ -64,13 +76,15 @@ export function analyzeSchemaExpression(
   let isArray = false;
   let isRecord = false;
   let isOptional = false;
+  let isNullable = false;
+  let isUndefinedable = false;
   let current = unwrapExpression(node);
 
   for (;;) {
     if (Node.isIdentifier(current)) {
       const name = current.getText();
       if (!isCandidateRef(name)) return null;
-      return { refSchema: name, isArray, isRecord, isOptional };
+      return { refSchema: name, isArray, isRecord, isOptional, isNullable, isUndefinedable };
     }
 
     if (!Node.isCallExpression(current)) return null;
@@ -82,7 +96,9 @@ export function analyzeSchemaExpression(
 
     if (VALIBOT_OPTIONAL_WRAPPERS.has(callName)) {
       if (args.length === 0) return null;
-      isOptional = true;
+      if (VALIBOT_OPTIONAL_KEY_WRAPPERS.has(callName)) isOptional = true;
+      if (VALIBOT_NULLABLE_WRAPPERS.has(callName)) isNullable = true;
+      if (VALIBOT_UNDEFINEDABLE_WRAPPERS.has(callName)) isUndefinedable = true;
       current = unwrapExpression(args[0]);
       continue;
     }

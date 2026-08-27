@@ -180,26 +180,47 @@ export class GetterResolver {
 
 /**
  * Builds the type a getter field should have, from the shape its AST describes.
+ *
+ * `isOptional` (key may be omitted) is handled separately via the `?` marker in
+ * `replaceFieldPlaceholder` - it is not repeated in the type itself, matching how
+ * a plain `v.optional()` field is already printed elsewhere. `isNullable` and
+ * `isUndefinedable` are independent of the key's optionality (Valibot's
+ * `v.nullable()` / `v.undefinedable()` widen the value's type without making the
+ * key optional), so they are appended here whenever set, including together with
+ * `isOptional` (e.g. `v.nullish()`, or `v.optional(v.nullable(...))`).
  */
 function buildReplacementType(typeName: string, info: GetterFieldInfo): string {
-  if (info.isArray) return `${typeName}[]`;
-  if (info.isRecord) return `{ [x: string]: ${typeName}; }`;
-  return typeName;
+  const base = info.isArray
+    ? `${typeName}[]`
+    : info.isRecord
+      ? `{ [x: string]: ${typeName}; }`
+      : typeName;
+
+  const suffixes: string[] = [];
+  if (info.isNullable) suffixes.push("null");
+  if (info.isUndefinedable) suffixes.push("undefined");
+  if (suffixes.length === 0) return base;
+  return `${base} | ${suffixes.join(" | ")}`;
 }
 
 /**
  * Checks whether a printed field type is nothing but an `any` placeholder.
  *
- * An annotated optional getter prints its placeholder as `any | undefined`: the
- * annotation tells TypeScript the key may be absent even though it cannot tell
- * what the key holds. The `| undefined` carries no information the rebuilt
- * optional key does not, so it is ignored here.
+ * An annotated getter whose wrapper widens the value's type (`v.optional()`,
+ * `v.nullable()`, `v.nullish()`, `v.undefinedable()`, or any combination of
+ * them) prints its placeholder with that widening still attached - e.g.
+ * `any | null | undefined` - because TypeScript derives the property's declared
+ * type from the wrapper regardless of whether the key itself ends up marked
+ * optional. That suffix carries no information `buildReplacementType` does not
+ * already reconstruct from the AST, so any trailing run of `| null` / `| undefined`
+ * segments, in any order or repetition, is stripped here before the placeholder
+ * check.
  */
 function isAnyPlaceholder(value: string): boolean {
   const normalized = value
     .trim()
     .replace(/^readonly\s+/, "")
-    .replace(/\s*\|\s*undefined$/, "")
+    .replace(/(?:\s*\|\s*(?:null|undefined))+$/, "")
     .trim();
   return /^any(\[\])?$/.test(normalized) || /^\{\s*\[x: string\]:\s*any;?\s*\}$/.test(normalized);
 }

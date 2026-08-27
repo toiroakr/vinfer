@@ -332,5 +332,72 @@ describe("GetterResolver", () => {
 
       expect(result).toBe("{ value: string; child?: Node; }");
     });
+
+    it("should keep the key required and add `| null` for a nullable-only field", () => {
+      // v.nullable() (unlike v.optional()) does not mark the object key itself
+      // optional - only the value's type widens.
+      const getterFields = new Map([
+        [
+          "children",
+          {
+            refSchema: "Node",
+            isArray: true,
+            isRecord: false,
+            isOptional: false,
+            isNullable: true,
+            isSelfRef: true,
+          },
+        ],
+      ]);
+
+      const typeStr = "{ value: string; children: any | null; }";
+      const result = resolver.resolveAnyTypes(typeStr, getterFields, "Node");
+
+      expect(result).toBe("{ value: string; children: Node[] | null; }");
+    });
+
+    it("should mark the key optional and add `| null` for a nullish field", () => {
+      const getterFields = new Map([
+        [
+          "children",
+          {
+            refSchema: "Node",
+            isArray: true,
+            isRecord: false,
+            isOptional: true,
+            isNullable: true,
+            isSelfRef: true,
+          },
+        ],
+      ]);
+
+      const typeStr = "{ value: string; children?: any | null | undefined; }";
+      const result = resolver.resolveAnyTypes(typeStr, getterFields, "Node");
+
+      expect(result).toBe("{ value: string; children?: Node[] | null; }");
+    });
+
+    it("should keep the key required and add `| undefined` for an undefinedable-only field", () => {
+      // v.undefinedable() (unlike v.optional()) does not mark the object key
+      // itself optional - only the value's type widens.
+      const getterFields = new Map([
+        [
+          "children",
+          {
+            refSchema: "Node",
+            isArray: true,
+            isRecord: false,
+            isOptional: false,
+            isUndefinedable: true,
+            isSelfRef: true,
+          },
+        ],
+      ]);
+
+      const typeStr = "{ value: string; children: any | undefined; }";
+      const result = resolver.resolveAnyTypes(typeStr, getterFields, "Node");
+
+      expect(result).toBe("{ value: string; children: Node[] | undefined; }");
+    });
   });
 });
