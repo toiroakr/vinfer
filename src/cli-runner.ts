@@ -53,6 +53,7 @@ export interface CLIOptions {
   generateTests?: boolean;
   verbose?: boolean;
   inlineExternalTypes?: boolean;
+  brandStrategy?: "valibot-import" | "local-symbol";
 }
 
 /**
@@ -131,6 +132,7 @@ export async function runCLI(files: string[], options: CLIOptions): Promise<void
     inputOnly: config.inputOnly,
     outputOnly: config.outputOnly,
     mergeSame: config.mergeSame,
+    brandStrategy: config.brandStrategy,
   };
 
   // Types are only referenced across files when every matched file actually
@@ -412,6 +414,7 @@ function mergeCliWithConfig(cliOptions: CLIOptions, fileConfig: VinferConfig): V
   if (cliOptions.generateTests !== undefined) merged.generateTests = cliOptions.generateTests;
   if (cliOptions.inlineExternalTypes !== undefined)
     merged.inlineExternalTypes = cliOptions.inlineExternalTypes;
+  if (cliOptions.brandStrategy !== undefined) merged.brandStrategy = cliOptions.brandStrategy;
 
   return merged;
 }
@@ -445,6 +448,33 @@ function validateOptions(config: VinferConfig): void {
       "--suffix",
       "Empty suffix is not allowed",
       "Provide a non-empty suffix value or omit the option",
+    );
+  }
+
+  // commander's .choices() rejects an invalid CLI flag value before this ever
+  // runs, but a config file is untyped JS/JSON and can carry any string.
+  if (
+    config.brandStrategy !== undefined &&
+    config.brandStrategy !== "valibot-import" &&
+    config.brandStrategy !== "local-symbol"
+  ) {
+    throw new InvalidOptionError(
+      "--brand-strategy",
+      `Invalid value "${config.brandStrategy}"`,
+      'Use "valibot-import" or "local-symbol"',
+    );
+  }
+
+  // The generated test asserts full type equality against
+  // v.InferOutput<>/v.InferInput<>, which always carries valibot's own
+  // Brand<Tag>/Flavor<Tag> for a branded/flavored schema. A local-symbol
+  // marker is intentionally a different (self-contained) shape, so that
+  // equality can never hold.
+  if (config.generateTests && config.brandStrategy === "local-symbol") {
+    throw new InvalidOptionError(
+      "--generate-tests",
+      "Cannot be used with --brand-strategy local-symbol",
+      "Generate tests with the default --brand-strategy valibot-import, or drop --generate-tests",
     );
   }
 }

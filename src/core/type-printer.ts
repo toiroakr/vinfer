@@ -351,12 +351,16 @@ export function formatAsDeclaration(
   typeName: MappedTypeName,
   options: DeclarationOptions = {},
 ): string {
-  const { inputOnly, outputOnly, mergeSame } = options;
+  const { inputOnly, outputOnly, mergeSame, brandStrategy } = options;
   const lines: string[] = [];
   const indent = "  ";
 
-  const inputFormatted = prettifyType(result.input, indent, result.fieldDescriptions);
-  const outputFormatted = prettifyType(result.output, indent, result.fieldDescriptions);
+  const rawInput =
+    brandStrategy === "local-symbol" ? localizeBrandMarkers(result.input) : result.input;
+  const rawOutput =
+    brandStrategy === "local-symbol" ? localizeBrandMarkers(result.output) : result.output;
+  const inputFormatted = prettifyType(rawInput, indent, result.fieldDescriptions);
+  const outputFormatted = prettifyType(rawOutput, indent, result.fieldDescriptions);
 
   // Schema-level TSDoc comment
   const schemaComment = result.description
@@ -652,6 +656,215 @@ function usedValibotTypeNames(results: ExtractResult[]): string[] {
 }
 
 /**
+ * Local-symbol marker names for the `"local-symbol"` brand strategy. A
+ * `declare const __brand: unique symbol;` / `declare const __flavor: unique
+ * symbol;` is emitted once per generated file (only the ones actually used)
+ * and reused by every branded/flavored type it declares - the nominal
+ * distinction between tags comes from the tag's own string literal, not from
+ * the symbol's identity, the same way Valibot's own `BrandSymbol` /
+ * `FlavorSymbol` markers work.
+ */
+const LOCAL_BRAND_SYMBOL = "__brand";
+const LOCAL_FLAVOR_SYMBOL = "__flavor";
+
+/**
+ * Maps each printed marker name to the local symbol name that replaces it,
+ * and to whether the printed property is optional - `Flavor<TName>` is
+ * `{ [FlavorSymbol]?: ... }` (optional) in Valibot, unlike `Brand<TName>`'s
+ * required property, and the local-symbol replacement mirrors that.
+ */
+const BRAND_MARKERS: ReadonlyArray<{
+  name: "Brand" | "Flavor";
+  symbol: string;
+  optional: boolean;
+}> = [
+  { name: "Brand", symbol: LOCAL_BRAND_SYMBOL, optional: false },
+  { name: "Flavor", symbol: LOCAL_FLAVOR_SYMBOL, optional: true },
+];
+
+/**
+ * Whether `ch` is a valid TypeScript identifier character, for the
+ * word-boundary check before a `Brand<`/`Flavor<` marker - a printed type
+ * ending an identifier in `...Foo$Brand<...>` must not be mistaken for a
+ * real marker.
+ */
+function isIdentifierChar(ch: string | undefined): boolean {
+  return ch !== undefined && /[\p{ID_Continue}$]/u.test(ch);
+}
+
+/**
+ * Finds which real `Brand<`/`Flavor<` marker (if any) starts at `index`,
+ * string-literal- and word-boundary-aware so a schema whose own literal
+ * value happens to contain the text `Brand<` (e.g. `v.literal("Brand<Fake>")`)
+ * or ends an identifier in `...Brand<...>` is never mistaken for one.
+ */
+function matchBrandMarkerAt(
+  typeStr: string,
+  index: number,
+): { name: "Brand" | "Flavor"; symbol: string; optional: boolean } | undefined {
+  if (isIdentifierChar(typeStr[index - 1])) return undefined;
+  for (const marker of BRAND_MARKERS) {
+    if (typeStr.startsWith(`${marker.name}<`, index)) return marker;
+  }
+  return undefined;
+}
+
+/**
+ * Finds the `>` that closes a `Brand<...>`/`Flavor<...>` marker's tag,
+ * skipping over a `>` that occurs inside the tag's own string literal (e.g.
+ * a tag like `"a>b"`).
+ */
+function findMarkerTagEnd(typeStr: string, tagStart: number): number {
+  let depth = 0;
+  let inString = false;
+  let stringChar = "";
+
+  for (let i = tagStart; i < typeStr.length; i++) {
+    const char = typeStr[i];
+
+    if ((char === '"' || char === "'" || char === "`") && !isEscaped(typeStr, i)) {
+      if (!inString) {
+        inString = true;
+        stringChar = char;
+      } else if (char === stringChar) {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === "<") {
+      depth++;
+    } else if (char === ">") {
+      if (depth === 0) return i;
+      depth--;
+    }
+  }
+
+  return typeStr.length;
+}
+
+/**
+ * Rewrites every printed `Brand<Tag>` / `Flavor<Tag>` marker to a
+ * self-contained symbol-keyed property, so the output never needs to import
+ * Valibot's `Brand` / `Flavor`.
+ *
+ * Scans with string-literal and word-boundary awareness, so a schema whose
+ * own literal type happens to contain the text `Brand<` (e.g.
+ * `v.literal("Brand<Fake>")`, printed as the string literal type
+ * `"Brand<Fake>"`) or ends an identifier in `...Brand<...>` is left
+ * untouched - only a real, unquoted marker is rewritten.
+ */
+function localizeBrandMarkers(typeStr: string): string {
+  let result = "";
+  let cursor = 0;
+  let inString = false;
+  let stringChar = "";
+
+  while (cursor < typeStr.length) {
+    const char = typeStr[cursor];
+
+    if ((char === '"' || char === "'" || char === "`") && !isEscaped(typeStr, cursor)) {
+      if (!inString) {
+        inString = true;
+        stringChar = char;
+      } else if (char === stringChar) {
+        inString = false;
+      }
+      result += char;
+      cursor++;
+      continue;
+    }
+
+    if (!inString) {
+      const marker = matchBrandMarkerAt(typeStr, cursor);
+      if (marker) {
+        const tagStart = cursor + marker.name.length + 1; // +1 for "<"
+        const tagEnd = findMarkerTagEnd(typeStr, tagStart);
+        const tag = typeStr.slice(tagStart, tagEnd);
+        const optionalMark = marker.optional ? "?" : "";
+        result += `{ readonly [${marker.symbol}]${optionalMark}: ${tag} }`;
+        cursor = tagEnd + 1;
+        continue;
+      }
+    }
+
+    result += char;
+    cursor++;
+  }
+
+  return result;
+}
+
+/**
+ * Finds which real `Brand<`/`Flavor<` markers (if any) a printed type
+ * contains, as opposed to a plain string literal that merely contains that
+ * text. Shares `localizeBrandMarkers`'s string-literal- and
+ * word-boundary-aware scan rather than a plain regex, for the same reason -
+ * used to decide which `declare const __brand`/`__flavor` lines are actually
+ * needed under the `"local-symbol"` strategy.
+ */
+function scanBrandMarkers(typeStr: string): Set<"Brand" | "Flavor"> {
+  const found = new Set<"Brand" | "Flavor">();
+  let inString = false;
+  let stringChar = "";
+
+  for (let cursor = 0; cursor < typeStr.length; cursor++) {
+    const char = typeStr[cursor];
+
+    if ((char === '"' || char === "'" || char === "`") && !isEscaped(typeStr, cursor)) {
+      if (!inString) {
+        inString = true;
+        stringChar = char;
+      } else if (char === stringChar) {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (!inString) {
+      const marker = matchBrandMarkerAt(typeStr, cursor);
+      if (marker) found.add(marker.name);
+    }
+  }
+
+  return found;
+}
+
+/**
+ * Finds which real `Brand<`/`Flavor<` markers show up across every result's
+ * *emitted* type(s). Only scans exported results (generateDeclarationFile
+ * skips non-exported ones), and only the sides that are actually emitted
+ * under `inputOnly`/`outputOnly`/`mergeSame`.
+ */
+function usedBrandMarkers(
+  results: ExtractResult[],
+  options: DeclarationOptions = {},
+): Set<"Brand" | "Flavor"> {
+  const { inputOnly, outputOnly, mergeSame } = options;
+  const found = new Set<"Brand" | "Flavor">();
+
+  for (const r of results) {
+    if (!r.isExported) continue;
+
+    const texts: string[] = [];
+    if (mergeSame && r.input === r.output) {
+      texts.push(r.input);
+    } else {
+      if (!outputOnly) texts.push(r.input);
+      if (!inputOnly) texts.push(r.output);
+    }
+
+    for (const text of texts) {
+      for (const name of scanBrandMarkers(text)) found.add(name);
+    }
+  }
+
+  return found;
+}
+
+/**
  * Generates a complete TypeScript declaration file content.
  *
  * @param results - Array of extraction results
@@ -671,11 +884,26 @@ export function generateDeclarationFile(
   lines.push("// Generated by vinfer - Do not edit manually");
   lines.push("");
 
-  // Import the Valibot type helpers that show up in the generated types
-  const valibotTypeNames = usedValibotTypeNames(results);
-  if (valibotTypeNames.length > 0) {
-    lines.push(`import type { ${valibotTypeNames.join(", ")} } from "valibot";`);
-    lines.push("");
+  if (options.brandStrategy === "local-symbol") {
+    // Add a local brand/flavor marker declaration instead of importing
+    // Brand/Flavor from valibot
+    const markers = usedBrandMarkers(results, options);
+    if (markers.has("Brand")) {
+      lines.push(`declare const ${LOCAL_BRAND_SYMBOL}: unique symbol;`);
+    }
+    if (markers.has("Flavor")) {
+      lines.push(`declare const ${LOCAL_FLAVOR_SYMBOL}: unique symbol;`);
+    }
+    if (markers.size > 0) {
+      lines.push("");
+    }
+  } else {
+    // Import the Valibot type helpers that show up in the generated types
+    const valibotTypeNames = usedValibotTypeNames(results);
+    if (valibotTypeNames.length > 0) {
+      lines.push(`import type { ${valibotTypeNames.join(", ")} } from "valibot";`);
+      lines.push("");
+    }
   }
 
   // Import the types this file references from other generated files

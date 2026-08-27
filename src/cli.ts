@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { resolve, dirname } from "pathe";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -35,6 +35,12 @@ program
   .option(
     "--inline-external-types",
     "Inline a plain type that an explicit v.GenericSchema<T> annotation reaches in another file, instead of referencing it",
+  )
+  .addOption(
+    new Option(
+      "--brand-strategy <strategy>",
+      "How to represent a .brand()/.flavor() marker in the generated output (default: valibot-import)",
+    ).choices(["valibot-import", "local-symbol"]),
   )
   .option("-v, --verbose", "Enable verbose output")
   .action(async (files: string[], options: CLIOptions) => {

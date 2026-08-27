@@ -48,6 +48,14 @@ export interface VinferConfig {
    * output pointing back at it.
    */
   inlineExternalTypes?: boolean;
+  /**
+   * How a `.brand()`/`.flavor()` marker is represented in the generated
+   * output. `"valibot-import"` (default) prints `Brand<"Tag">` /
+   * `Flavor<"Tag">` and imports `Brand`/`Flavor` from "valibot".
+   * `"local-symbol"` prints a self-contained `unique symbol`-keyed property
+   * instead, so the generated file never imports valibot.
+   */
+  brandStrategy?: "valibot-import" | "local-symbol";
 }
 
 /**
