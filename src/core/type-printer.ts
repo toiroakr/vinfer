@@ -663,6 +663,16 @@ function usedValibotTypeNames(results: ExtractResult[]): string[] {
  * distinction between tags comes from the tag's own string literal, not from
  * the symbol's identity, the same way Valibot's own `BrandSymbol` /
  * `FlavorSymbol` markers work.
+ *
+ * Because each generated file declares its own `unique symbol`, two
+ * same-tag branded types printed into *separate* output files (e.g. one
+ * per input file under `--outDir`) are not assignable to each other, even
+ * though their printed text looks identical - TypeScript's `unique symbol`
+ * ties identity to the declaration, not the name. `--brand-strategy
+ * valibot-import`'s `Brand`/`Flavor` don't have this limitation, since
+ * every file imports the same marker from valibot. A type referenced
+ * through `crossFileImportLines` (an `import type` of another generated
+ * file's own type) is unaffected either way.
  */
 const LOCAL_BRAND_SYMBOL = "__brand";
 const LOCAL_FLAVOR_SYMBOL = "__flavor";
@@ -682,6 +692,9 @@ const BRAND_MARKERS: ReadonlyArray<{
   { name: "Flavor", symbol: LOCAL_FLAVOR_SYMBOL, optional: true },
 ];
 
+/** Matches a valid TypeScript identifier character. */
+const IDENTIFIER_CHAR = /[\p{ID_Continue}$]/u;
+
 /**
  * Whether `ch` is a valid TypeScript identifier character, for the
  * word-boundary check before a `Brand<`/`Flavor<` marker - a printed type
@@ -689,7 +702,7 @@ const BRAND_MARKERS: ReadonlyArray<{
  * real marker.
  */
 function isIdentifierChar(ch: string | undefined): boolean {
-  return ch !== undefined && /[\p{ID_Continue}$]/u.test(ch);
+  return ch !== undefined && IDENTIFIER_CHAR.test(ch);
 }
 
 /**
@@ -746,21 +759,30 @@ function findMarkerTagEnd(typeStr: string, tagStart: number): number {
 }
 
 /**
- * Rewrites every printed `Brand<Tag>` / `Flavor<Tag>` marker to a
- * self-contained symbol-keyed property, so the output never needs to import
- * Valibot's `Brand` / `Flavor`.
- *
- * Scans with string-literal and word-boundary awareness, so a schema whose
- * own literal type happens to contain the text `Brand<` (e.g.
- * `v.literal("Brand<Fake>")`, printed as the string literal type
- * `"Brand<Fake>"`) or ends an identifier in `...Brand<...>` is left
- * untouched - only a real, unquoted marker is rewritten.
+ * One real `Brand<Tag>`/`Flavor<Tag>` marker found by `scanForBrandMarkers`,
+ * with its position and the boundaries of its tag.
  */
-function localizeBrandMarkers(typeStr: string): string {
-  let result = "";
-  let cursor = 0;
+interface BrandMarkerMatch {
+  marker: { name: "Brand" | "Flavor"; symbol: string; optional: boolean };
+  start: number;
+  tagStart: number;
+  tagEnd: number;
+}
+
+/**
+ * Scans a printed type string for real `Brand<`/`Flavor<` markers, yielding
+ * each one's position and tag boundaries. String-literal and word-boundary
+ * aware, so a schema whose own literal type happens to contain the text
+ * `Brand<` (e.g. `v.literal("Brand<Fake>")`, printed as the string literal
+ * type `"Brand<Fake>"`) or ends an identifier in `...Brand<...>` never
+ * yields a match. Shared by `localizeBrandMarkers` (which rewrites each
+ * match) and `scanBrandMarkers` (which only records which marker names
+ * appear).
+ */
+function* scanForBrandMarkers(typeStr: string): Generator<BrandMarkerMatch> {
   let inString = false;
   let stringChar = "";
+  let cursor = 0;
 
   while (cursor < typeStr.length) {
     const char = typeStr[cursor];
@@ -772,7 +794,6 @@ function localizeBrandMarkers(typeStr: string): string {
       } else if (char === stringChar) {
         inString = false;
       }
-      result += char;
       cursor++;
       continue;
     }
@@ -782,17 +803,33 @@ function localizeBrandMarkers(typeStr: string): string {
       if (marker) {
         const tagStart = cursor + marker.name.length + 1; // +1 for "<"
         const tagEnd = findMarkerTagEnd(typeStr, tagStart);
-        const tag = typeStr.slice(tagStart, tagEnd);
-        const optionalMark = marker.optional ? "?" : "";
-        result += `{ readonly [${marker.symbol}]${optionalMark}: ${tag} }`;
+        yield { marker, start: cursor, tagStart, tagEnd };
         cursor = tagEnd + 1;
         continue;
       }
     }
 
-    result += char;
     cursor++;
   }
+}
+
+/**
+ * Rewrites every printed `Brand<Tag>` / `Flavor<Tag>` marker to a
+ * self-contained symbol-keyed property, so the output never needs to import
+ * Valibot's `Brand` / `Flavor`.
+ */
+function localizeBrandMarkers(typeStr: string): string {
+  let result = "";
+  let cursor = 0;
+
+  for (const { marker, start, tagStart, tagEnd } of scanForBrandMarkers(typeStr)) {
+    result += typeStr.slice(cursor, start);
+    const tag = typeStr.slice(tagStart, tagEnd);
+    const optionalMark = marker.optional ? "?" : "";
+    result += `{ readonly [${marker.symbol}]${optionalMark}: ${tag} }`;
+    cursor = tagEnd + 1;
+  }
+  result += typeStr.slice(cursor);
 
   return result;
 }
@@ -800,35 +837,12 @@ function localizeBrandMarkers(typeStr: string): string {
 /**
  * Finds which real `Brand<`/`Flavor<` markers (if any) a printed type
  * contains, as opposed to a plain string literal that merely contains that
- * text. Shares `localizeBrandMarkers`'s string-literal- and
- * word-boundary-aware scan rather than a plain regex, for the same reason -
- * used to decide which `declare const __brand`/`__flavor` lines are actually
- * needed under the `"local-symbol"` strategy.
+ * text - used to decide which `declare const __brand`/`__flavor` lines are
+ * actually needed under the `"local-symbol"` strategy.
  */
 function scanBrandMarkers(typeStr: string): Set<"Brand" | "Flavor"> {
   const found = new Set<"Brand" | "Flavor">();
-  let inString = false;
-  let stringChar = "";
-
-  for (let cursor = 0; cursor < typeStr.length; cursor++) {
-    const char = typeStr[cursor];
-
-    if ((char === '"' || char === "'" || char === "`") && !isEscaped(typeStr, cursor)) {
-      if (!inString) {
-        inString = true;
-        stringChar = char;
-      } else if (char === stringChar) {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (!inString) {
-      const marker = matchBrandMarkerAt(typeStr, cursor);
-      if (marker) found.add(marker.name);
-    }
-  }
-
+  for (const { marker } of scanForBrandMarkers(typeStr)) found.add(marker.name);
   return found;
 }
 

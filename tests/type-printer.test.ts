@@ -322,6 +322,7 @@ describe("brandStrategy: local-symbol", () => {
     );
     expect(output).toContain("declare const __brand: unique symbol;");
     expect(output).toContain('string & { readonly [__brand]: "UserId" }');
+    expect(output).not.toContain("__flavor");
     expect(output).not.toContain("valibot");
   });
 
@@ -333,6 +334,7 @@ describe("brandStrategy: local-symbol", () => {
     );
     expect(output).toContain("declare const __flavor: unique symbol;");
     expect(output).toContain('string & { readonly [__flavor]?: "Email" }');
+    expect(output).not.toContain("__brand");
     expect(output).not.toContain("valibot");
   });
 

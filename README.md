@@ -358,6 +358,14 @@ The local-symbol marker is intentionally a different shape from Valibot's own
 `Brand`/`Flavor`, so `--brand-strategy local-symbol` cannot be combined with
 `--generate-tests` (which asserts full type equality against `v.InferOutput<>`).
 
+**Cross-file limitation**: each generated file declares its own `unique symbol`, so
+two same-tag branded types printed into _separate_ output files (e.g. one per input
+file under `--outDir`) are not assignable to each other, even though their printed
+text looks identical - TypeScript's `unique symbol` ties identity to the declaration,
+not the name. `--brand-strategy valibot-import` doesn't have this limitation, since
+every file imports the same marker from valibot. A type referenced across generated
+files via an `import type` is unaffected either way.
+
 ## Circular Reference Support
 
 ### v.lazy Pattern (Recommended)
