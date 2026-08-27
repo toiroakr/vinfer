@@ -288,7 +288,14 @@ function modulePathFor(sourceFile: SourceFile): string {
   // import("...") text absolutizeImportPaths already produced, corrupting
   // both resolveModuleSourceFile's filesystem lookup and the cycle-detection
   // keys built from it.
-  return realpathSync(sourceFile.getFilePath()).replace(
+  //
+  // realpathSync returns OS-native separators, which are backslashes on
+  // Windows - embedding that directly into an import("...") string would
+  // produce an invalid module specifier (and a mis-escaped string literal).
+  // Routed through pathe's resolve(), the same normalization
+  // absolutizeImportPaths already relies on for its own realpath'd
+  // sourceDir, to always land on the forward-slash form.
+  return resolvePath(realpathSync(sourceFile.getFilePath())).replace(
     /\.d\.(ts|mts|cts)$|\.(ts|tsx|mts|cts)$/,
     "",
   );
