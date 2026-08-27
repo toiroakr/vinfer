@@ -457,6 +457,19 @@ describe("runCLI", () => {
       expect(output).toContain('import type { Brand, Flavor } from "valibot";');
       expect(output).not.toContain("__brand");
     });
+
+    it("is wired through a config file, not just the CLI flag", async () => {
+      cpSync(join(fixturesDir, "brand-schema.ts"), join(workDir, "schemas/brand-schema.ts"));
+      writeFileSync(
+        join(workDir, "vinfer.config.mjs"),
+        'export default { include: ["schemas/brand-schema.ts"], brandStrategy: "local-symbol" };',
+      );
+
+      const output = await run([]);
+
+      expect(output).toContain("declare const __brand: unique symbol;");
+      expect(output).not.toContain("valibot");
+    });
   });
 
   it("reads options from vinfer.config.mjs", async () => {

@@ -1,5 +1,5 @@
 ---
-"vinfer": minor
+"vinfer": patch
 ---
 
 Add `--brand-strategy` (config `brandStrategy`) to control how a `.brand()`/`.flavor()` marker is represented in the generated output.
