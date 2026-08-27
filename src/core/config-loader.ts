@@ -41,6 +41,13 @@ export interface VinferConfig {
   withDescriptions?: boolean;
   /** Generate vitest type equality tests alongside type files */
   generateTests?: boolean;
+  /**
+   * Replace the `import("...")` reference an explicit `v.GenericSchema<T>`
+   * annotation's `T` synthesizes for a plain type declared in another file
+   * with that type's own structure, instead of leaving the generated
+   * output pointing back at it.
+   */
+  inlineExternalTypes?: boolean;
 }
 
 /**

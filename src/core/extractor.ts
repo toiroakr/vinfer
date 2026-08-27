@@ -1,5 +1,13 @@
-import { Project, SourceFile, TypeFormatFlags, ts, type EnumDeclaration } from "ts-morph";
-import { resolve as resolvePath } from "pathe";
+import {
+  Project,
+  SourceFile,
+  TypeFormatFlags,
+  ts,
+  type EnumDeclaration,
+  type TypeAliasDeclaration,
+  type InterfaceDeclaration,
+} from "ts-morph";
+import { resolve as resolvePath, isAbsolute } from "pathe";
 import { realpathSync } from "fs";
 import {
   NORMALIZE_TYPE_DEFINITION,
@@ -44,6 +52,27 @@ interface RawSchemaType {
    * getter describes instead.
    */
   approximation?: { input: string; output: string };
+}
+
+/**
+ * Where a name usable bare within some file's own scope actually lives -
+ * built by `collectFileLocalTypeReferences` and consumed by
+ * `promoteBareTypeReferences`/`resolveReferenceOrFallback`.
+ */
+interface LocalTypeReference {
+  /** The file that declares this name (itself, for a same-file entry). */
+  file: SourceFile;
+  /** Absolute path, without extension, of `file` - only meaningful when `hasValidFallback`. */
+  modulePath: string;
+  /** The name `file` declares/exports this under (never a local import alias). */
+  exportedName: string;
+  /**
+   * Whether `import("${modulePath}").${exportedName}` is a valid reference
+   * to fall back on if expanding this hits a cycle. False only for a
+   * same-file declaration that isn't exported - nothing can import it, so
+   * a cycle through it has no resolvable form at all.
+   */
+  hasValidFallback: boolean;
 }
 
 /**
@@ -164,6 +193,67 @@ function withOutputFallback(printedOutput: string, printedInput: string): string
 }
 
 /**
+ * Removes trailing spaces ts-morph 27+ may add to printed type text. Skips
+ * split/map/join for single-line types (most common case).
+ */
+function trimPrintedType(rawType: string): string {
+  if (!rawType.includes("\n")) {
+    return rawType.trimEnd();
+  }
+  return rawType
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n");
+}
+
+/**
+ * Whether `typeText` has a `|` or `&` outside any bracket/quote nesting - a
+ * top-level union or intersection that would bind incorrectly if the
+ * caller appends a suffix like `[]` without wrapping it in parens first.
+ */
+function hasTopLevelUnionOrIntersection(typeText: string): boolean {
+  let depth = 0;
+  let quote: string | undefined;
+
+  for (let i = 0; i < typeText.length; i++) {
+    const char = typeText[i];
+
+    if (quote) {
+      if (char === quote && !isEscaped(typeText, i)) quote = undefined;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+    } else if (char === "{" || char === "(" || char === "[" || char === "<") {
+      depth++;
+    } else if (char === "}" || char === ")" || char === "]") {
+      depth--;
+    } else if (char === ">") {
+      // The `>` of an arrow function type's `=>` never opened a matching
+      // `<` - counting it would desync depth tracking for the rest of the
+      // string, hiding (or inventing) a top-level union/intersection.
+      if (typeText[i - 1] !== "=") depth--;
+    } else if (depth === 0 && (char === "|" || char === "&")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * The module specifier form of a file's own path: absolute, without a
+ * source extension, matching what TypeScript itself prints inside a
+ * synthesized `import("...")` type and what `resolveModuleSourceFile`
+ * resolves back from - so a type reached either way lands on the same
+ * cycle-detection key.
+ */
+function modulePathFor(sourceFile: SourceFile): string {
+  return sourceFile.getFilePath().replace(/\.d\.(ts|mts|cts)$|\.(ts|tsx|mts|cts)$/, "");
+}
+
+/**
  * Options for type extraction.
  */
 export interface ExtractOptions {
@@ -188,6 +278,19 @@ export interface ExtractContext {
    * outside this set are inlined as before.
    */
   importableFiles?: ReadonlySet<string>;
+  /**
+   * When an explicit `v.GenericSchema<T>` annotation's `T` reaches a plain
+   * (non-schema) type declared in another file, TypeScript's printer
+   * synthesizes an `import("...").Name` reference to it rather than
+   * expanding it in place - there is nothing else to point at from this
+   * print location. Setting this replaces that reference with the
+   * referenced type's own structure instead, recursively, so the generated
+   * output carries no dependency on the original file layout. A reference
+   * that would recurse into itself (directly or through another file) is
+   * left as `import(...)` at the point it would cycle - see
+   * `inlineExternalTypeReferences`.
+   */
+  inlineExternalTypes?: boolean;
 }
 
 /**
@@ -339,7 +442,7 @@ export class ValibotTypeExtractor {
       // The self-references a recursive schema needs are spelled with the local
       // name, and what they point at depends on whether the declaring file is
       // generated, so both belong in the cache key alongside the declaration.
-      const cacheKey = `${importInfo.sourceFilePath}:${importInfo.originalName}:${localName}:${isImportable}`;
+      const cacheKey = `${importInfo.sourceFilePath}:${importInfo.originalName}:${localName}:${isImportable}:${Boolean(context.inlineExternalTypes)}`;
       const cached = this.importedSchemaCache.get(cacheKey);
       if (cached) {
         rawTypes.set(localName, { ...cached, isExported: false });
@@ -357,6 +460,7 @@ export class ValibotTypeExtractor {
           importInfo.originalName,
           localName,
           isImportable,
+          context.inlineExternalTypes,
         );
 
         // Cache the result
@@ -379,7 +483,11 @@ export class ValibotTypeExtractor {
       if (explicitType) {
         this.injectExplicitType(sourceFile, explicitType);
         try {
-          const resolvedType = this.resolveType(sourceFile, "__TempExplicit");
+          const resolvedType = this.resolveType(
+            sourceFile,
+            "__TempExplicit",
+            context.inlineExternalTypes,
+          );
           rawTypes.set(schemaName, {
             input: resolvedType,
             output: resolvedType,
@@ -393,8 +501,12 @@ export class ValibotTypeExtractor {
 
       this.injectTemporaryTypes(sourceFile, localName ?? schemaName);
       try {
-        const rawInput = this.resolveType(sourceFile, "__TempInput");
-        const printedOutput = this.resolveType(sourceFile, "__TempOutput");
+        const rawInput = this.resolveType(sourceFile, "__TempInput", context.inlineExternalTypes);
+        const printedOutput = this.resolveType(
+          sourceFile,
+          "__TempOutput",
+          context.inlineExternalTypes,
+        );
         const rawOutput = withOutputFallback(printedOutput, rawInput);
 
         let input = rawInput;
@@ -784,7 +896,11 @@ export class ValibotTypeExtractor {
   /**
    * Resolves a type alias and returns its fully expanded string representation.
    */
-  private resolveType(sourceFile: SourceFile, typeName: string): string {
+  private resolveType(
+    sourceFile: SourceFile,
+    typeName: string,
+    inlineExternalTypes = false,
+  ): string {
     const typeAlias = sourceFile.getTypeAlias(typeName);
     if (!typeAlias) {
       throw new Error(`Failed to find type alias: ${typeName}`);
@@ -797,17 +913,7 @@ export class ValibotTypeExtractor {
     const formatFlags = TypeFormatFlags.NoTruncation | TypeFormatFlags.InTypeAlias;
 
     let rawType = type.getText(typeAlias, formatFlags);
-
-    // Remove trailing spaces from each line (ts-morph 27+ may add them)
-    // Skip split/map/join for single-line types (most common case)
-    if (rawType.includes("\n")) {
-      rawType = rawType
-        .split("\n")
-        .map((line) => line.trimEnd())
-        .join("\n");
-    } else {
-      rawType = rawType.trimEnd();
-    }
+    rawType = trimPrintedType(rawType);
 
     // Expand enum types: if the type is a single identifier, check if it's an enum
     if (/^[A-Z][a-zA-Z0-9]*$/.test(rawType)) {
@@ -820,9 +926,366 @@ export class ValibotTypeExtractor {
     rawType = collapseRepeatedUndefined(rawType);
     rawType = absolutizeImportPaths(rawType, sourceFile.getDirectoryPath());
 
+    if (inlineExternalTypes) {
+      rawType = this.inlineExternalTypeReferences(rawType, new Set());
+    }
+
     // Reduce Valibot type references (Brand/Flavor) to their bare names so the
     // generated file can import them from "valibot" directly.
     return ValibotBindings.from(sourceFile).canonicalizeTypeNames(rawType);
+  }
+
+  /**
+   * Replaces `import("path").TypeName` references to a plain (non-schema)
+   * type declared in another file with that type's own structure, so the
+   * generated output no longer depends on the original file layout.
+   *
+   * `visiting` tracks the `file#TypeName` pairs currently being expanded in
+   * this call chain. A reference that would revisit one of them - a type
+   * that (directly or through another file) refers back to itself - is left
+   * as `import(...)` at that point instead of recursing forever; everything
+   * that isn't part of the cycle is still fully expanded.
+   *
+   * Scoped to plain types only: a reference this can't resolve to a
+   * `type`/`interface`/`enum` declaration (a class, a renamed/default
+   * export, or anything else `resolveExternalTypeReference` gives up on) is
+   * left as `import(...)` unchanged - the same safe fallback already relied
+   * on for a local `v.GenericSchema<T>` annotation that names a type this
+   * file cannot rewrite.
+   *
+   * Only `import("path").Name` on its own is expanded - `import("path")
+   * .Name.Member` (a qualified name, e.g. an enum member) or
+   * `import("path").Name<Args>` (a generic instantiation) is left as-is:
+   * substituting only `Name` would strand `.Member`/`<Args>` against
+   * whatever replaces it. The identifier after the dot is found by a plain
+   * character scan, not a regex lookahead - a backtracking engine can
+   * satisfy `(?!\s*<)` by giving back characters (matching `Bo` instead of
+   * `Box` when `Box<string>` follows), which a scan never does.
+   */
+  private inlineExternalTypeReferences(rawType: string, visiting: Set<string>): string {
+    if (!rawType.includes('import("')) return rawType;
+
+    const importPrefix = /import\("([^"]+)"\)\./g;
+    let result = "";
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = importPrefix.exec(rawType))) {
+      const modulePath = match[1];
+      const nameStart = match.index + match[0].length;
+
+      let nameEnd = nameStart;
+      while (nameEnd < rawType.length && /[A-Za-z0-9_$]/.test(rawType[nameEnd])) nameEnd++;
+      const typeName = rawType.slice(nameStart, nameEnd);
+
+      result += rawType.slice(lastIndex, match.index);
+
+      const nextChar = rawType[nameEnd];
+      // `typeof import("...").Name` is a valid type query pointing at a
+      // value, not a type - `typeof` followed by Name's expanded structure
+      // (`typeof { ... }`) is not valid syntax at all. The printer always
+      // normalizes to exactly one space after `typeof`.
+      const isTypeQuery = rawType.slice(0, match.index).endsWith("typeof ");
+      const isQualifiedOrGeneric = nextChar === "." || nextChar === "<";
+      const targetFile =
+        isQualifiedOrGeneric || isTypeQuery ? undefined : this.resolveModuleSourceFile(modulePath);
+
+      result += targetFile
+        ? this.resolveOrKeepImportText(
+            targetFile,
+            typeName,
+            rawType.slice(match.index, nameEnd),
+            visiting,
+          )
+        : rawType.slice(match.index, nameEnd);
+
+      lastIndex = nameEnd;
+      importPrefix.lastIndex = nameEnd;
+    }
+
+    result += rawType.slice(lastIndex);
+    return result;
+  }
+
+  /**
+   * The `import("path").Name` matched-text branch of `inlineExternalTypeReferences`:
+   * expand `typeName` in `targetFile`, or fall back to `originalText`
+   * unchanged (on a cycle, or when it isn't a plain type declaration).
+   */
+  private resolveOrKeepImportText(
+    targetFile: SourceFile,
+    typeName: string,
+    originalText: string,
+    visiting: Set<string>,
+  ): string {
+    const key = `${targetFile.getFilePath()}#${typeName}`;
+    if (visiting.has(key)) return originalText;
+
+    visiting.add(key);
+    try {
+      const expanded = this.resolveExternalTypeReference(targetFile, typeName, visiting);
+      if (expanded === undefined) return originalText;
+      return hasTopLevelUnionOrIntersection(expanded) ? `(${expanded})` : expanded;
+    } finally {
+      visiting.delete(key);
+    }
+  }
+
+  /**
+   * Looks up `typeName` as a type alias, interface, or enum declared in
+   * `targetFile` and returns its expanded structure - recursing into any
+   * further external references it carries. Returns undefined when
+   * `typeName` isn't one of those (a class, or an export this couldn't
+   * match by its declared name), leaving the caller's `import(...)` as-is.
+   */
+  private resolveExternalTypeReference(
+    targetFile: SourceFile,
+    typeName: string,
+    visiting: Set<string>,
+  ): string | undefined {
+    const typeAlias = targetFile.getTypeAlias(typeName);
+    if (typeAlias) {
+      return this.expandExternalDeclaration(targetFile, typeAlias, visiting);
+    }
+
+    const iface = targetFile.getInterface(typeName);
+    if (iface) {
+      return this.expandExternalDeclaration(targetFile, iface, visiting);
+    }
+
+    const enumDecl = targetFile.getEnum(typeName);
+    if (enumDecl) {
+      return printEnumAsLiteralUnion(enumDecl);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Prints a type alias's or interface's own structure and recurses into
+   * whatever further references it carries - both the `import("...")`
+   * TypeScript itself synthesizes for names invisible from `targetFile`,
+   * and the bare names of anything that *is* visible there (its own
+   * same-file declarations, or types it imports for its own use). The
+   * latter print exactly like any other in-scope identifier - correct
+   * only inside `targetFile` itself - so `promoteBareTypeReferences` has
+   * to turn them into the same explicit, resolvable form before this text
+   * is embedded anywhere else.
+   */
+  private expandExternalDeclaration(
+    targetFile: SourceFile,
+    declaration: TypeAliasDeclaration | InterfaceDeclaration,
+    visiting: Set<string>,
+  ): string {
+    const formatFlags = TypeFormatFlags.NoTruncation | TypeFormatFlags.InTypeAlias;
+    let text = declaration.getType().getText(declaration, formatFlags);
+    text = trimPrintedType(text);
+    text = absolutizeImportPaths(text, targetFile.getDirectoryPath());
+    text = this.promoteBareTypeReferences(text, targetFile, visiting);
+    return this.inlineExternalTypeReferences(text, visiting);
+  }
+
+  /**
+   * Replaces bare identifiers in `text` - printed type text read from
+   * `targetFile`, valid only within its own scope - with an explicit,
+   * resolvable reference: either the fully expanded structure of the type
+   * they name, or (only on a cycle, and only when that type is exported
+   * from wherever it's declared) an `import("...")` pointing at it.
+   *
+   * A same-file declaration that isn't exported has no importable name to
+   * fall back to - a cycle through one is left as the bare identifier, the
+   * same documented limitation as a non-exported local explicit-annotation
+   * type.
+   */
+  private promoteBareTypeReferences(
+    text: string,
+    targetFile: SourceFile,
+    visiting: Set<string>,
+  ): string {
+    const references = this.collectFileLocalTypeReferences(targetFile);
+    if (references.size === 0) return text;
+
+    let result = "";
+    let quote: string | undefined;
+    let i = 0;
+
+    while (i < text.length) {
+      const char = text[i];
+
+      if (quote) {
+        result += char;
+        if (char === quote && !isEscaped(text, i)) quote = undefined;
+        i++;
+        continue;
+      }
+
+      if (char === '"' || char === "'" || char === "`") {
+        quote = char;
+        result += char;
+        i++;
+        continue;
+      }
+
+      if (/[A-Za-z_$]/.test(char)) {
+        let end = i + 1;
+        while (end < text.length && /[A-Za-z0-9_$]/.test(text[end])) end++;
+        const word = text.slice(i, end);
+
+        const precededByDot = i > 0 && text[i - 1] === ".";
+        // The checker prints a property key as `name:`/`name?:` with no
+        // space before the colon - a bare type reference never precedes a
+        // colon this way (a conditional type's ` ? ` / ` : ` both carry a
+        // space), so this is how the two are told apart without a parser.
+        const nextChar = text[end];
+        const isPropertyKey = nextChar === ":" || (nextChar === "?" && text[end + 1] === ":");
+        // A method signature's name (`Name(): T`) is not a type reference
+        // at all - substituting it would corrupt the method's own name,
+        // not a type. `(` never otherwise directly follows a bare type
+        // reference this scan produces.
+        const isMethodName = nextChar === "(";
+        // `Name.Member` (a qualified name, e.g. an enum member) or
+        // `Name<Args>` (a generic instantiation): substituting only `Name`
+        // would strand `.Member`/`<Args>` against whatever replaces it.
+        // `import("...").Name` keeps both suffixes valid; expanding Name's
+        // own structure in place would not, so this reference is only ever
+        // qualified, never expanded.
+        const isQualifiedOrGeneric = nextChar === "." || nextChar === "<";
+        // `typeof Name` is a type query pointing at a value, not a type -
+        // `typeof` followed by Name's expanded structure (`typeof { ... }`)
+        // isn't valid syntax at all, so this can only ever be qualified.
+        const isTypeQuery = result.endsWith("typeof ");
+
+        const reference = references.get(word);
+        result +=
+          reference && !precededByDot && !isPropertyKey && !isMethodName
+            ? isQualifiedOrGeneric || isTypeQuery
+              ? this.referenceFallbackText(reference, word)
+              : this.resolveReferenceOrFallback(reference, word, visiting)
+            : word;
+        i = end;
+        continue;
+      }
+
+      result += char;
+      i++;
+    }
+
+    return result;
+  }
+
+  /**
+   * Resolves one entry from `collectFileLocalTypeReferences`: expands it
+   * (recursing, with the same cycle handling as `inlineExternalTypeReferences`),
+   * or - on a cycle - falls back to an `import(...)` reference if one is
+   * valid, else the original bare identifier.
+   */
+  private resolveReferenceOrFallback(
+    reference: LocalTypeReference,
+    word: string,
+    visiting: Set<string>,
+  ): string {
+    const key = `${reference.file.getFilePath()}#${reference.exportedName}`;
+    const fallback = this.referenceFallbackText(reference, word);
+
+    if (visiting.has(key)) return fallback;
+
+    visiting.add(key);
+    try {
+      const expanded = this.resolveExternalTypeReference(
+        reference.file,
+        reference.exportedName,
+        visiting,
+      );
+      if (expanded === undefined) return fallback;
+      return hasTopLevelUnionOrIntersection(expanded) ? `(${expanded})` : expanded;
+    } finally {
+      visiting.delete(key);
+    }
+  }
+
+  /**
+   * The safe, non-expanding text for a reference: an `import(...)` pointing
+   * at it if one is valid, else the original bare identifier unchanged.
+   */
+  private referenceFallbackText(reference: LocalTypeReference, word: string): string {
+    return reference.hasValidFallback
+      ? `import("${reference.modulePath}").${reference.exportedName}`
+      : word;
+  }
+
+  /**
+   * Maps every name usable bare within `targetFile`'s own scope - its own
+   * exported or non-exported type/interface/enum declarations, and named
+   * imports of the same (default and namespace imports aren't tracked;
+   * a bare reference through either is left untouched, the same fallback
+   * as an unresolvable one) - to where it actually lives.
+   */
+  private collectFileLocalTypeReferences(targetFile: SourceFile): Map<string, LocalTypeReference> {
+    const references = new Map<string, LocalTypeReference>();
+    const selfModulePath = modulePathFor(targetFile);
+
+    const addLocal = (name: string, isExported: boolean): void => {
+      references.set(name, {
+        file: targetFile,
+        modulePath: selfModulePath,
+        exportedName: name,
+        hasValidFallback: isExported,
+      });
+    };
+
+    for (const typeAlias of targetFile.getTypeAliases()) {
+      addLocal(typeAlias.getName(), typeAlias.isExported());
+    }
+    for (const iface of targetFile.getInterfaces()) {
+      addLocal(iface.getName(), iface.isExported());
+    }
+    for (const enumDecl of targetFile.getEnums()) {
+      addLocal(enumDecl.getName(), enumDecl.isExported());
+    }
+
+    for (const importDecl of targetFile.getImportDeclarations()) {
+      const moduleSourceFile = importDecl.getModuleSpecifierSourceFile();
+      if (!moduleSourceFile) continue;
+
+      const modulePath = modulePathFor(moduleSourceFile);
+      for (const namedImport of importDecl.getNamedImports()) {
+        const localName = namedImport.getAliasNode()?.getText() ?? namedImport.getName();
+        references.set(localName, {
+          file: moduleSourceFile,
+          modulePath,
+          exportedName: namedImport.getName(),
+          hasValidFallback: true,
+        });
+      }
+    }
+
+    return references;
+  }
+
+  /**
+   * Resolves a printed `import("...")` module specifier to the `SourceFile`
+   * it points at, trying each extension TypeScript itself would resolve.
+   * Loads the file into the shared project on demand so a type declared
+   * there can be read the same way as any file passed to `extractAll`.
+   *
+   * Only an absolute specifier is probed as a filesystem path.
+   * `absolutizeImportPaths` already makes every relative specifier (`./...`)
+   * TypeScript prints absolute, so a non-absolute one here is a bare
+   * package specifier (`import("valibot").Foo`) - treating it as a relative
+   * filename could accidentally resolve to an unrelated same-named local
+   * file the caller never intended to reach.
+   */
+  private resolveModuleSourceFile(modulePath: string): SourceFile | undefined {
+    if (!isAbsolute(modulePath)) return undefined;
+
+    for (const ext of [".ts", ".tsx", ".mts", ".cts", ".d.ts", ".d.mts", ".d.cts"]) {
+      const candidate = `${modulePath}${ext}`;
+      const sourceFile =
+        this.project.getSourceFile(candidate) ??
+        this.project.addSourceFileAtPathIfExists(candidate);
+      if (sourceFile) return sourceFile;
+    }
+    return undefined;
   }
 
   /**
@@ -842,9 +1305,10 @@ export class ValibotTypeExtractor {
     originalName: string,
     localName: string,
     isImportable: boolean,
+    inlineExternalTypes = false,
   ): Omit<RawSchemaType, "isExported"> {
-    const inputType = this.resolveType(importedSourceFile, "__TempInput");
-    const rawOutputType = this.resolveType(importedSourceFile, "__TempOutput");
+    const inputType = this.resolveType(importedSourceFile, "__TempInput", inlineExternalTypes);
+    const rawOutputType = this.resolveType(importedSourceFile, "__TempOutput", inlineExternalTypes);
     const outputType = withOutputFallback(rawOutputType, inputType);
 
     const getterFields = this.getterResolver
