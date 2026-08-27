@@ -8,13 +8,17 @@ import type { Box, GenericBox } from "./box";
 // synthesis never produces this ambiguity, since it always prefixes with
 // `import("...").`.
 //
-// GenericBox<T>() is the same collision, but with the method's own type
-// parameter list: `<T>` reads like a generic type instantiation
-// (GenericBox<Args>) at a glance, so this exercises the guard that tells
-// the two apart by checking whether `(` follows the closing `>`.
+// GenericBox<T extends (x: string) => void>() is the same collision, but
+// with the method's own type parameter list: `<T ...>` reads like a
+// generic type instantiation (GenericBox<Args>) at a glance, so this
+// exercises the guard that tells the two apart by checking whether `(`
+// follows the closing `>`. The constraint's own arrow-function type carries
+// a `>` that never opened a matching `<` - exercising the same exclusion
+// hasTopLevelUnionOrIntersection needs for an arrow type, here inside the
+// balanced-<...> scan instead.
 export type Holder = {
   Box(): string;
-  GenericBox<T>(): T;
+  GenericBox<T extends (x: string) => void>(): T;
   value: Box;
   boxed: GenericBox<string>;
 };

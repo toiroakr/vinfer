@@ -245,10 +245,15 @@ function hasTopLevelUnionOrIntersection(typeText: string): boolean {
 /**
  * Whether `text[afterIdentifier]` begins a generic method signature's own
  * type parameter list (`<T>(`), not a generic type instantiation (`<Args>`
- * with no method call following). Scans a balanced `<...>` run - TypeScript's
- * printer never emits a bare `<`/`>` comparison operator here, only matched
- * pairs delimiting type parameters/arguments - and checks whether `(`
- * immediately follows the close.
+ * with no method call following). Scans a balanced `<...>` run and checks
+ * whether `(` immediately follows the close.
+ *
+ * A type parameter's constraint or default can itself carry an arrow
+ * function type (`<T extends (x: string) => void>`) - that `=>`'s `>` never
+ * opened a matching `<`, so it must not be counted as a close, the same
+ * `=>` exclusion `hasTopLevelUnionOrIntersection` applies for the same
+ * reason. Miscounting it would close the scan early, at the arrow's own
+ * `>`, and misjudge whatever follows.
  */
 function isGenericMethodSignature(text: string, afterIdentifier: number): boolean {
   if (text[afterIdentifier] !== "<") return false;
@@ -257,7 +262,7 @@ function isGenericMethodSignature(text: string, afterIdentifier: number): boolea
   let i = afterIdentifier;
   for (; i < text.length; i++) {
     if (text[i] === "<") depth++;
-    else if (text[i] === ">") {
+    else if (text[i] === ">" && text[i - 1] !== "=") {
       depth--;
       if (depth === 0) {
         i++;
